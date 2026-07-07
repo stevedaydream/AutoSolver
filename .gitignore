@@ -1,0 +1,22 @@
+# Android Studio / Gradle
+*.iml
+.gradle
+local.properties
+.idea/
+.kotlin/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+
+# Claude Code 本地設定
+.claude/
+
+# Python 訓練產物（可由腳本重新生成）
+train/__pycache__/
+train/*.pt
+train/*.onnx
+train/*.npz

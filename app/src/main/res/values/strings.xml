@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AutoDora</string>
+    <string name="accessibility_service_description">Auto Dora Accessibility Service used to simulate puzzle swipe gestures.</string>
+</resources>
