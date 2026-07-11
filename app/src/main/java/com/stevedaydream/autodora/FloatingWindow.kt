@@ -2,6 +2,7 @@ package com.stevedaydream.autodora
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -35,10 +36,10 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var rootLayout: LinearLayout? = null
     private lateinit var params: WindowManager.LayoutParams
+    private lateinit var statusParams: WindowManager.LayoutParams  // 狀態卡獨立視窗
 
     private lateinit var topRow: LinearLayout
     private lateinit var toggleBtn: TextView
-    private lateinit var menuScrollView: HorizontalScrollView
     private lateinit var menuLayout: LinearLayout
     private lateinit var statusCard: LinearLayout
     private lateinit var statusDot: View
@@ -97,26 +98,72 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         setupTopRow()
         setupResultRow()
         setupSettingsPanel()
-        rootLayout?.addView(topRow); rootLayout?.addView(statusCard); rootLayout?.addView(settingsPanel)
+        rootLayout?.addView(topRow); rootLayout?.addView(settingsPanel)
         setupDragAndSnapListener()
         windowManager.addView(rootLayout, params)
+
+        // 狀態卡拆成獨立視窗：不佔懸浮窗版面、不影響其量測，且不攔截觸控
+        statusParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = params.x
+            y = params.y + statusYOffset()
+        }
+        windowManager.addView(statusCard, statusParams)
     }
 
+    /** 狀態卡視窗相對懸浮球的垂直偏移（懸浮球 52dp + 間距 8dp） */
+    private fun statusYOffset(): Int = (60 * context.resources.displayMetrics.density).toInt()
+
     private fun setupTopRow() {
-        val mkBg = { GradientDrawable().apply { setColor(Color.parseColor("#CC2C3E50")); cornerRadius = 24f } }
-        topRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        toggleBtn = TextView(context).apply { text = "🤖"; textSize = 28f; setPadding(24, 24, 24, 24); background = mkBg() }
-        menuScrollView = HorizontalScrollView(context).apply { visibility = View.GONE; isHorizontalScrollBarEnabled = false }
-        menuLayout = LinearLayout(context).apply { background = mkBg(); orientation = LinearLayout.HORIZONTAL }
+        val dp = context.resources.displayMetrics.density
+        topRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            // 必須明確給 WRAP_CONTENT：垂直 LinearLayout 量測自身寬度時會「排除」
+            // MATCH_PARENT（預設值）的子元素，導致父容器寬度只剩其他子元素的寬度，
+            // 第二輪量測再把本列強制壓縮 → 選單被截斷
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        toggleBtn = TextView(context).apply {
+            text = "🤖"; textSize = 22f; gravity = Gravity.CENTER
+            includeFontPadding = false
+            val size = (52 * dp).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size)
+            background = OverlayUi.circle(context, OverlayUi.SURFACE, stroked = true)
+        }
+        // 選單列直接放進 topRow（7 顆 44dp 按鈕 + 分隔線 ≈ 337dp，任何螢幕都放得下，
+        // 不需要 HorizontalScrollView — 它在 WRAP_CONTENT overlay 視窗下量測會塌縮）
+        menuLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            background = OverlayUi.rounded(context, OverlayUi.SURFACE, 26f, stroked = true)
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = (8 * dp).toInt() }
+        }
 
         // ▶ 一鍵模式：辨識 + 立即執行（原拆分的 🔍/▶ 已移至設定面板）
-        val btnPlay = createMenuButton("▶", "#2ECC71")
-        val btnPreview = createMenuButton("👁", "#E67E22")
-        val btnAuto = createMenuButton("🔁", "#9B59B6")
-        val btnStop = createMenuButton("■", "#E74C3C")
-        val btnMacro = createMenuButton("⏺", "#EC407A")
-        val btnSettings = createMenuButton("⚙", "#F1C40F")
-        val btnClose = createMenuButton("✖", "#95A5A6")
+        // 動作群（語意色）：執行 accent、停止 danger；工具群一律灰階
+        // 用純文字符號（非 emoji）才能被 setTextColor 染色，維持灰階＋語意色的一致性
+        val btnPlay = OverlayUi.iconButton(context, "▶", OverlayUi.ACCENT, chipColor = OverlayUi.ACCENT_CHIP)
+        val btnPreview = OverlayUi.iconButton(context, "◉", OverlayUi.TEXT_HI)
+        val btnAuto = OverlayUi.iconButton(context, "↻", OverlayUi.TEXT_HI, textSizeSp = 18f)
+        val btnStop = OverlayUi.iconButton(context, "■", OverlayUi.DANGER, textSizeSp = 14f)
+        val btnMacro = OverlayUi.iconButton(context, "●", "#F472B6")
+        val btnSettings = OverlayUi.iconButton(context, "⚙", OverlayUi.TEXT_LO)
+        val btnClose = OverlayUi.iconButton(context, "✕", OverlayUi.TEXT_LO, textSizeSp = 14f)
 
         btnPlay.setOnClickListener {
             if (isGestureRunning) return@setOnClickListener
@@ -153,7 +200,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             // ── 進入 auto 模式：收折選單，只留 autoBar + statusCard ──
             isAutoRunning = true; autoRound = 0; pathOverlayWindow.hide()
             isExpanded = false; isSettingsOpen = false
-            menuScrollView.visibility = View.GONE
+            menuLayout.visibility = View.GONE
             settingsPanel.visibility  = View.GONE
             autoBar.visibility        = View.VISIBLE
             statusCard.visibility     = View.VISIBLE
@@ -232,127 +279,114 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
 
         menuLayout.apply {
             addView(btnPlay); addView(btnPreview); addView(btnAuto); addView(btnStop)
+            addView(OverlayUi.vDivider(context))
             addView(btnMacro); addView(btnSettings); addView(btnClose)
         }
-        menuScrollView.addView(menuLayout)
 
         // ── 自動執行精簡列（auto 啟動時取代選單列）────────────────
         autoBar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
-            background = mkBg()
             gravity = Gravity.CENTER_VERTICAL
+            background = OverlayUi.rounded(context, OverlayUi.SURFACE, 26f, stroked = true)
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = (8 * dp).toInt() }
         }
-        val btnAutoBarStop = createMenuButton("■", "#E74C3C")
+        val btnAutoBarStop = OverlayUi.iconButton(context, "■", OverlayUi.DANGER, textSizeSp = 14f)
         btnAutoBarStop.setOnClickListener { isAutoRunning = false }
         autoBar.addView(btnAutoBarStop)
 
         topRow.addView(toggleBtn)
-        topRow.addView(menuScrollView)
+        topRow.addView(menuLayout)
         topRow.addView(autoBar)
     }
 
     private fun setupSettingsPanel() {
+        val dp = context.resources.displayMetrics.density
         settingsPanel = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL; visibility = View.GONE; setPadding(24, 24, 24, 24)
-            background = GradientDrawable().apply { setColor(Color.parseColor("#EE34495E")); cornerRadius = 16f }
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            minimumWidth = (252 * dp).toInt()
+            setPadding((18 * dp).toInt(), (8 * dp).toInt(), (18 * dp).toInt(), (16 * dp).toInt())
+            background = OverlayUi.rounded(context, OverlayUi.SURFACE_CARD, 18f, stroked = true)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (6 * dp).toInt() }
         }
+        val accentTint = ColorStateList.valueOf(Color.parseColor(OverlayUi.ACCENT))
 
-        val stepVal = TextView(context).apply { text = "$currentSteps"; setTextColor(Color.YELLOW); setPadding(16, 0, 16, 0) }
-        val btnMinus = createMenuButton("-", "#E74C3C").apply { setOnClickListener {
+        // ── 解算參數 ─────────────────────────────────────────────
+        settingsPanel.addView(OverlayUi.sectionLabel(context, "解算參數"))
+
+        val stepVal = OverlayUi.valueText(context, "$currentSteps")
+        settingsPanel.addView(makeStepperRow("步數", stepVal, onMinus = {
             currentSteps = (currentSteps - 5).coerceAtLeast(5); stepVal.text = "$currentSteps"
             prefs.edit().putInt("steps", currentSteps).apply()
-        } }
-        val btnPlus = createMenuButton("+", "#2ECC71").apply { setOnClickListener {
+        }, onPlus = {
             currentSteps = (currentSteps + 5).coerceAtMost(60); stepVal.text = "$currentSteps"
             prefs.edit().putInt("steps", currentSteps).apply()
-        } }
-        val rowStep = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(TextView(context).apply { text = "步數: "; setTextColor(Color.WHITE) })
-            addView(btnMinus); addView(stepVal); addView(btnPlus)
-        }
+        }))
 
-        val timeVal = TextView(context).apply { text = "${currentGestureMs / 1000}s"; setTextColor(Color.YELLOW); setPadding(16, 0, 16, 0) }
-        val btnTimeMinus = createMenuButton("-", "#E74C3C").apply {
-            setOnClickListener {
-                currentGestureMs = (currentGestureMs - 1000L).coerceAtLeast(1000L)
-                timeVal.text = "${currentGestureMs / 1000}s"
-                prefs.edit().putLong("gestureMs", currentGestureMs).apply()
-            }
-        }
-        val btnTimePlus = createMenuButton("+", "#2ECC71").apply {
-            setOnClickListener {
-                currentGestureMs = (currentGestureMs + 1000L).coerceAtMost(15000L)
-                timeVal.text = "${currentGestureMs / 1000}s"
-                prefs.edit().putLong("gestureMs", currentGestureMs).apply()
-            }
-        }
-        val rowTime = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(TextView(context).apply { text = "轉珠時間: "; setTextColor(Color.WHITE) })
-            addView(btnTimeMinus); addView(timeVal); addView(btnTimePlus)
-        }
+        val timeVal = OverlayUi.valueText(context, "${currentGestureMs / 1000}s")
+        settingsPanel.addView(makeStepperRow("轉珠時間", timeVal, onMinus = {
+            currentGestureMs = (currentGestureMs - 1000L).coerceAtLeast(1000L)
+            timeVal.text = "${currentGestureMs / 1000}s"
+            prefs.edit().putLong("gestureMs", currentGestureMs).apply()
+        }, onPlus = {
+            currentGestureMs = (currentGestureMs + 1000L).coerceAtMost(15000L)
+            timeVal.text = "${currentGestureMs / 1000}s"
+            prefs.edit().putLong("gestureMs", currentGestureMs).apply()
+        }))
 
-        val intervalVal = TextView(context).apply { text = "${currentRoundIntervalMs / 1000}s"; setTextColor(Color.YELLOW); setPadding(16, 0, 16, 0) }
-        val btnIntervalMinus = createMenuButton("-", "#E74C3C").apply {
-            setOnClickListener {
-                currentRoundIntervalMs = (currentRoundIntervalMs - 1000L).coerceAtLeast(1000L)
-                intervalVal.text = "${currentRoundIntervalMs / 1000}s"
-                prefs.edit().putLong("roundIntervalMs", currentRoundIntervalMs).apply()
-            }
-        }
-        val btnIntervalPlus = createMenuButton("+", "#2ECC71").apply {
-            setOnClickListener {
-                currentRoundIntervalMs = (currentRoundIntervalMs + 1000L).coerceAtMost(30000L)
-                intervalVal.text = "${currentRoundIntervalMs / 1000}s"
-                prefs.edit().putLong("roundIntervalMs", currentRoundIntervalMs).apply()
-            }
-        }
-        val rowInterval = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(TextView(context).apply { text = "輪間隔: "; setTextColor(Color.WHITE) })
-            addView(btnIntervalMinus); addView(intervalVal); addView(btnIntervalPlus)
-        }
+        val intervalVal = OverlayUi.valueText(context, "${currentRoundIntervalMs / 1000}s")
+        settingsPanel.addView(makeStepperRow("輪間隔", intervalVal, onMinus = {
+            currentRoundIntervalMs = (currentRoundIntervalMs - 1000L).coerceAtLeast(1000L)
+            intervalVal.text = "${currentRoundIntervalMs / 1000}s"
+            prefs.edit().putLong("roundIntervalMs", currentRoundIntervalMs).apply()
+        }, onPlus = {
+            currentRoundIntervalMs = (currentRoundIntervalMs + 1000L).coerceAtMost(30000L)
+            intervalVal.text = "${currentRoundIntervalMs / 1000}s"
+            prefs.edit().putLong("roundIntervalMs", currentRoundIntervalMs).apply()
+        }))
 
-        val beamVal = TextView(context).apply { text = "$beamWidth"; setTextColor(Color.YELLOW); setPadding(16, 0, 16, 0) }
-        val btnBeamMinus = createMenuButton("-", "#E74C3C").apply {
-            setOnClickListener {
-                beamWidth = (beamWidth - 50).coerceAtLeast(50)
-                beamVal.text = "$beamWidth"
-                prefs.edit().putInt("beamWidth", beamWidth).apply()
-            }
-        }
-        val btnBeamPlus = createMenuButton("+", "#2ECC71").apply {
-            setOnClickListener {
-                beamWidth = (beamWidth + 50).coerceAtMost(500)
-                beamVal.text = "$beamWidth"
-                prefs.edit().putInt("beamWidth", beamWidth).apply()
-            }
-        }
-        val rowBeam = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(TextView(context).apply { text = "搜尋廣度: "; setTextColor(Color.WHITE) })
-            addView(btnBeamMinus); addView(beamVal); addView(btnBeamPlus)
-        }
+        val beamVal = OverlayUi.valueText(context, "$beamWidth")
+        settingsPanel.addView(makeStepperRow("搜尋廣度", beamVal, onMinus = {
+            beamWidth = (beamWidth - 50).coerceAtLeast(50); beamVal.text = "$beamWidth"
+            prefs.edit().putInt("beamWidth", beamWidth).apply()
+        }, onPlus = {
+            beamWidth = (beamWidth + 50).coerceAtMost(500); beamVal.text = "$beamWidth"
+            prefs.edit().putInt("beamWidth", beamWidth).apply()
+        }))
 
         val cb8Way = CheckBox(context).apply {
-            text = "斜向移動 (8方向)"
-            setTextColor(Color.WHITE)
+            text = "斜向移動（8 方向）"
+            setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+            textSize = 13f
+            buttonTintList = accentTint
             isChecked = is8Way
             setOnCheckedChangeListener { _, checked ->
                 is8Way = checked
                 prefs.edit().putBoolean("is8Way", checked).apply()
             }
         }
+        settingsPanel.addView(cb8Way)
 
-        val tvStrategy = TextView(context).apply { text = "計算策略："; setTextColor(Color.WHITE); setPadding(0, 16, 0, 8) }
+        // ── 計算策略 ─────────────────────────────────────────────
+        fun makeRadio(idVal: Int, label: String, checked: Boolean, sizeSp: Float = 13f) =
+            RadioButton(context).apply {
+                text = label; id = idVal; isChecked = checked
+                setTextColor(Color.parseColor(OverlayUi.TEXT_HI)); textSize = sizeSp
+                buttonTintList = accentTint
+            }
+        settingsPanel.addView(OverlayUi.sectionLabel(context, "計算策略"))
         val rgStrategy = RadioGroup(context).apply { orientation = LinearLayout.VERTICAL }
-        val rbS0 = RadioButton(context).apply { text = "一般高 Combo"; setTextColor(Color.WHITE); id = 0; isChecked = (strategyMode == 0) }
-        val rbS1 = RadioButton(context).apply { text = "底層平鋪防黏珠"; setTextColor(Color.WHITE); id = 1; isChecked = (strategyMode == 1) }
-        val rbS2 = RadioButton(context).apply { text = "直排4顆 (昇華技)"; setTextColor(Color.WHITE); id = 2; isChecked = (strategyMode == 2) }
-        val rbS3 = RadioButton(context).apply { text = "ML 智能策略"; setTextColor(Color.WHITE); id = 3; isChecked = (strategyMode == 3) }
-        rgStrategy.addView(rbS0); rgStrategy.addView(rbS1); rgStrategy.addView(rbS2); rgStrategy.addView(rbS3)
+        rgStrategy.addView(makeRadio(0, "一般高 Combo", strategyMode == 0))
+        rgStrategy.addView(makeRadio(1, "底層平鋪防黏珠", strategyMode == 1))
+        rgStrategy.addView(makeRadio(2, "直排4顆 (昇華技)", strategyMode == 2))
+        rgStrategy.addView(makeRadio(3, "ML 智能策略", strategyMode == 3))
+        settingsPanel.addView(rgStrategy)
 
         // ── ML 屬性選擇面板（只在選擇 ML 模式時顯示）──
         val mlAttrPanel = LinearLayout(context).apply {
@@ -361,7 +395,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             setPadding(16, 4, 0, 4)
         }
         val tvAttr = TextView(context).apply {
-            text = "屬性優先："; setTextColor(Color.parseColor("#BDC3C7"))
+            text = "屬性優先："; setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
             textSize = 12f
         }
         val rgAttr = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
@@ -384,6 +418,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 id = idx
                 isChecked = (attr.modelFile == selectedMLModel)
                 textSize = 12f
+                buttonTintList = accentTint
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) {
                         val newModel = attr.modelFile
@@ -398,6 +433,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }
         mlAttrPanel.addView(tvAttr)
         mlAttrPanel.addView(rgAttr)
+        settingsPanel.addView(mlAttrPanel)
 
         mlAttrPanel.visibility = if (strategyMode == 3) View.VISIBLE else View.GONE
         rgStrategy.setOnCheckedChangeListener { _, id ->
@@ -407,55 +443,45 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             refreshWindowLayout()
         }
 
-        val tvStart = TextView(context).apply { text = "起手點位置："; setTextColor(Color.WHITE); setPadding(0, 16, 0, 8) }
+        // ── 起手點位置 ───────────────────────────────────────────
+        settingsPanel.addView(OverlayUi.sectionLabel(context, "起手點位置"))
         val rgStart = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
-        val rbP0 = RadioButton(context).apply { text = "全盤尋找"; setTextColor(Color.WHITE); id = 0; isChecked = (startMode == 0) }
-        val rbP1 = RadioButton(context).apply { text = "左下角"; setTextColor(Color.WHITE); id = 1; isChecked = (startMode == 1) }
-        val rbP2 = RadioButton(context).apply { text = "右下角"; setTextColor(Color.WHITE); id = 2; isChecked = (startMode == 2) }
-        rgStart.addView(rbP0); rgStart.addView(rbP1); rgStart.addView(rbP2)
+        rgStart.addView(makeRadio(0, "全盤尋找", startMode == 0, 12f))
+        rgStart.addView(makeRadio(1, "左下角", startMode == 1, 12f))
+        rgStart.addView(makeRadio(2, "右下角", startMode == 2, 12f))
         rgStart.setOnCheckedChangeListener { _, id -> startMode = id; prefs.edit().putInt("startMode", id).apply() }
+        settingsPanel.addView(rgStart)
 
-        // ── 校正工具區塊 ─────────────────────────────────────────────
-        val tvCalibSection = TextView(context).apply {
-            text = "校正工具："
-            setTextColor(Color.WHITE)
-            setPadding(0, 16, 0, 8)
-        }
+        // ── 校正工具 ─────────────────────────────────────────────
+        settingsPanel.addView(OverlayUi.sectionLabel(context, "校正工具"))
 
         // 📷 建立樣板（原 top bar btnCalibrate）
-        val btnCalib = Button(context).apply {
-            text = "📷 建立樣板"
-            setBackgroundColor(Color.parseColor("#8E44AD"))
-            setTextColor(Color.WHITE)
+        val btnCalib = OverlayUi.pillButton(context, "📷 建立樣板").apply {
             setOnClickListener { doTemplateCalibration() }
         }
-
         // 🔍 辨識計算（原 top bar btnAnalyze，只計算顯示路徑，不執行）
-        val btnAnalyzeSetting = Button(context).apply {
-            text = "🔍 辨識計算"
-            setBackgroundColor(Color.parseColor("#3498DB"))
-            setTextColor(Color.WHITE)
+        val btnAnalyzeSetting = OverlayUi.pillButton(context, "🔍 辨識計算").apply {
             setOnClickListener { analyzeAndComputePath(autoExecute = false) }
         }
-
         // ▶ 執行路徑（原 top bar btnPlay，執行上次計算的路徑）
-        val btnPlaySetting = Button(context).apply {
-            text = "▶ 執行路徑"
-            setBackgroundColor(Color.parseColor("#2ECC71"))
-            setTextColor(Color.WHITE)
+        val btnPlaySetting = OverlayUi.pillButton(
+            context, "▶ 執行路徑", textColor = OverlayUi.ACCENT, chipColor = OverlayUi.ACCENT_CHIP
+        ).apply {
             setOnClickListener { executeLastPath() }
         }
-
         val rowCalibActions = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(btnCalib); addView(btnAnalyzeSetting); addView(btnPlaySetting)
+            val lpGap = {
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = (6 * dp).toInt() }
+            }
+            addView(btnCalib, lpGap()); addView(btnAnalyzeSetting, lpGap()); addView(btnPlaySetting)
         }
+        settingsPanel.addView(rowCalibActions)
 
-        // 🔍 調整辨識區域（開啟 BoardPreviewWindow 校正板）
-        val btnPre = Button(context).apply {
-            text = "🔍 調整辨識區域"
-            setBackgroundColor(Color.parseColor("#2980B9"))
-            setTextColor(Color.WHITE)
+        // 調整辨識區域（開啟 BoardPreviewWindow 校正板）
+        val btnPre = OverlayUi.pillButton(context, "⊞ 調整辨識區域").apply {
             setOnClickListener {
                 if (previewWindow == null) previewWindow = BoardPreviewWindow(context) { collectInitialSamples() }
                 pathOverlayWindow.hide()
@@ -463,18 +489,32 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 toggleExpand()
             }
         }
+        settingsPanel.addView(btnPre, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = (8 * dp).toInt() })
+    }
 
-        settingsPanel.addView(rowStep)
-        settingsPanel.addView(rowTime)
-        settingsPanel.addView(rowInterval)
-        settingsPanel.addView(rowBeam)
-        settingsPanel.addView(cb8Way)
-        settingsPanel.addView(tvStrategy); settingsPanel.addView(rgStrategy)
-        settingsPanel.addView(mlAttrPanel)
-        settingsPanel.addView(tvStart); settingsPanel.addView(rgStart)
-        settingsPanel.addView(tvCalibSection)
-        settingsPanel.addView(rowCalibActions)
-        settingsPanel.addView(btnPre)
+    /** 設定列：左側標籤 + 右側「− 值 ＋」步進器 */
+    private fun makeStepperRow(
+        label: String, valueView: TextView, onMinus: () -> Unit, onPlus: () -> Unit
+    ): LinearLayout {
+        val dp = context.resources.displayMetrics.density
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (3 * dp).toInt(), 0, (3 * dp).toInt())
+            addView(TextView(context).apply {
+                text = label
+                setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+                textSize = 13f
+                layoutParams = LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                ).apply { marginEnd = (12 * dp).toInt() }
+            })
+            addView(OverlayUi.stepButton(context, "−").apply { setOnClickListener { onMinus() } })
+            addView(valueView)
+            addView(OverlayUi.stepButton(context, "＋").apply { setOnClickListener { onPlus() } })
+        }
     }
 
     private fun setupResultRow() {
@@ -504,7 +544,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         // 詳細資訊（Combo · 步數 · 第N輪），預設隱藏
         statusDetail = TextView(context).apply {
             text = ""
-            setTextColor(Color.parseColor("#AAAAAA"))
+            setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
             textSize = 11f
             visibility = View.GONE
             setPadding((14 * dp).toInt(), (3 * dp).toInt(), 0, 0)
@@ -517,24 +557,16 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             addView(statusDetail)
         }
 
-        // Card：圓點 + 文字欄，橫向排列，深色圓角背景
+        // Card：圓點 + 文字欄，橫向排列，深色圓角背景（獨立視窗，layoutParams 由 WindowManager 指定）
         statusCard = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
             setPadding((16 * dp).toInt(), (10 * dp).toInt(), (16 * dp).toInt(), (10 * dp).toInt())
             gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#DD1A252F"))
-                cornerRadius = 14f
-            }
+            background = OverlayUi.rounded(context, OverlayUi.SURFACE_CARD, 16f, stroked = true)
             addView(statusDot)
             addView(textCol)
         }
-    }
-
-    private fun createMenuButton(t: String, c: String) = TextView(context).apply {
-        text = t; setTextColor(Color.parseColor(c)); setBackgroundColor(Color.TRANSPARENT)
-        setPadding(24, 16, 24, 16); textSize = 22f
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -543,7 +575,13 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         toggleBtn.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> { iY = params.y; iTY = e.rawY; isDragging = false; true }
-                MotionEvent.ACTION_MOVE -> { val dy = e.rawY - iTY; if (abs(dy) > 10) { isDragging = true; params.y = iY + dy.toInt(); windowManager.updateViewLayout(rootLayout, params) }; true }
+                MotionEvent.ACTION_MOVE -> { val dy = e.rawY - iTY; if (abs(dy) > 10) {
+                    isDragging = true; params.y = iY + dy.toInt()
+                    windowManager.updateViewLayout(rootLayout, params)
+                    // 狀態卡視窗跟著懸浮球移動
+                    statusParams.y = params.y + statusYOffset()
+                    if (statusCard.isAttachedToWindow) windowManager.updateViewLayout(statusCard, statusParams)
+                }; true }
                 MotionEvent.ACTION_UP -> { if (!isDragging) toggleExpand(); true }
                 else -> false
             }
@@ -553,18 +591,46 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private fun toggleExpand() {
         if (isAutoRunning) return  // 自動執行中不允許展開選單
         isExpanded = !isExpanded
-        menuScrollView.visibility = if (isExpanded) View.VISIBLE else View.GONE
+        menuLayout.visibility = if (isExpanded) View.VISIBLE else View.GONE
         statusCard.visibility = if (isExpanded) View.VISIBLE else View.GONE
         if (!isExpanded) { isSettingsOpen = false; settingsPanel.visibility = View.GONE }
         refreshWindowLayout()
     }
 
-    private fun refreshWindowLayout() {
-        rootLayout?.post {
-            params.width = WindowManager.LayoutParams.WRAP_CONTENT
-            params.height = WindowManager.LayoutParams.WRAP_CONTENT
-            windowManager.updateViewLayout(rootLayout, params)
+    /** 遞迴清除 measure cache：visibility 切換後，未標記 forceLayout 的節點會沿用過期快取 */
+    private fun forceLayoutRecursive(v: View) {
+        v.forceLayout()
+        if (v is ViewGroup) for (i in 0 until v.childCount) forceLayoutRecursive(v.getChildAt(i))
+    }
+
+    /**
+     * WRAP_CONTENT 視窗在內容變寬時，ViewRootImpl 以「目前視窗框」為上限量測，
+     * 導致視窗撐不開。因此自行以 UNSPECIFIED 量測內容，把寬度設為明確像素值（上限為螢幕寬）。
+     */
+    private fun refreshOverlaySize(root: View?, p: WindowManager.LayoutParams) {
+        root ?: return
+        root.post {
+            if (!root.isAttachedToWindow) return@post
+            forceLayoutRecursive(root)
+            root.measure(
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            val screenW = context.resources.displayMetrics.widthPixels
+            val w = root.measuredWidth.coerceAtMost(screenW)
+            if (p.width != w) {
+                p.width = w
+                p.height = WindowManager.LayoutParams.WRAP_CONTENT
+                windowManager.updateViewLayout(root, p)
+            } else {
+                root.requestLayout()  // 消化 forceLayout 標記，避免殘留半套量測狀態
+            }
         }
+    }
+
+    private fun refreshWindowLayout() {
+        refreshOverlaySize(rootLayout, params)
+        if (::statusParams.isInitialized) refreshOverlaySize(statusCard, statusParams)
     }
 
     fun updateStatus(
@@ -594,6 +660,8 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 statusDetail.text = parts.joinToString(" · ")
                 statusDetail.visibility = View.VISIBLE
             }
+            // 狀態文字變長時同步撐開視窗寬度（見 refreshWindowLayout 說明）
+            refreshWindowLayout()
         }
     }
 
@@ -784,6 +852,9 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         macroListWindow = null
         pathOverlayWindow.hide()
         recognitionOverlayWindow.hide()
+        if (::statusCard.isInitialized && statusCard.isAttachedToWindow) {
+            windowManager.removeView(statusCard)
+        }
         rootLayout?.let {
             if (it.isAttachedToWindow) windowManager.removeView(it)
         }

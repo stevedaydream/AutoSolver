@@ -27,6 +27,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 以 debug keystore 簽署 release：APK 才能直接安裝，且與舊版簽章一致，
+            // App 內自動更新（覆蓋安裝）才不會因簽章不符被系統拒絕
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

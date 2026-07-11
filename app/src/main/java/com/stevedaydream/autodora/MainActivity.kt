@@ -17,11 +17,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
@@ -78,6 +85,50 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             AutoDoraTheme {
+                // ── GitHub Release 自動更新檢查 ──
+                var updateInfo by remember { mutableStateOf<UpdateChecker.ReleaseInfo?>(null) }
+                LaunchedEffect(Unit) {
+                    val current = try {
+                        packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+                    } catch (e: Exception) { "0" }
+                    val latest = UpdateChecker.fetchLatest()
+                    if (latest != null && UpdateChecker.isNewer(latest.versionName, current)) {
+                        updateInfo = latest
+                    }
+                }
+                updateInfo?.let { info ->
+                    AlertDialog(
+                        onDismissRequest = { updateInfo = null },
+                        title = { Text("發現新版本 v${info.versionName}") },
+                        text = {
+                            Text(
+                                if (info.notes.isBlank()) "有新版本可供更新。"
+                                else info.notes.take(600)
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                if (info.apkUrl != null) {
+                                    UpdateChecker.downloadAndInstall(
+                                        this@MainActivity, info.apkUrl, info.versionName
+                                    )
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "下載中，完成後會跳出安裝畫面",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.htmlUrl)))
+                                }
+                                updateInfo = null
+                            }) { Text("立即更新") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { updateInfo = null }) { Text("稍後") }
+                        }
+                    )
+                }
+
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Column(
                         modifier = Modifier

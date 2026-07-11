@@ -4,12 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -40,33 +38,27 @@ class MacroListWindow(
 
         rootLayout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#EE1A252F"))
-                cornerRadius = 16f
-            }
-            setPadding((12 * dp).toInt(), (12 * dp).toInt(), (12 * dp).toInt(), (12 * dp).toInt())
-            minimumWidth = (260 * dp).toInt()
+            background = OverlayUi.rounded(context, OverlayUi.SURFACE, 20f, stroked = true)
+            setPadding((14 * dp).toInt(), (12 * dp).toInt(), (14 * dp).toInt(), (14 * dp).toInt())
+            minimumWidth = (296 * dp).toInt()
         }
 
         // Title bar
         val titleBar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, (8 * dp).toInt())
+            setPadding(0, 0, 0, (10 * dp).toInt())
         }
         titleBar.addView(TextView(context).apply {
-            text = "📋 Macro 清單"
-            setTextColor(Color.WHITE)
-            textSize = 16f
+            text = "巨集清單"
+            setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+            textSize = 15f
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        titleBar.addView(TextView(context).apply {
-            text = "✖"
-            setTextColor(Color.parseColor("#95A5A6"))
-            textSize = 18f
-            setPadding((12 * dp).toInt(), 0, 0, 0)
-            setOnClickListener { hide() }
-        })
+        titleBar.addView(OverlayUi.iconButton(
+            context, "✕", OverlayUi.TEXT_LO, sizeDp = 30f, textSizeSp = 13f
+        ).apply { setOnClickListener { hide() } })
         rootLayout!!.addView(titleBar)
 
         // Scrollable macro list
@@ -80,15 +72,23 @@ class MacroListWindow(
         scrollView.addView(listContainer)
         rootLayout!!.addView(scrollView)
 
-        // New recording button
-        rootLayout!!.addView(Button(context).apply {
-            text = "⏺ 新增錄製"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#EC407A"))
+        // New recording button（accent 實心 pill）
+        rootLayout!!.addView(TextView(context).apply {
+            text = "＋ 新增錄製"
+            setTextColor(Color.parseColor("#0D1117"))
+            textSize = 14f
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            gravity = Gravity.CENTER
+            setPadding(0, (11 * dp).toInt(), 0, (11 * dp).toInt())
+            background = android.graphics.drawable.StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed),
+                    OverlayUi.rounded(context, "#3BBE6C", 22f))
+                addState(intArrayOf(), OverlayUi.rounded(context, OverlayUi.ACCENT, 22f))
+            }
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = (8 * dp).toInt() }
+            ).apply { topMargin = (10 * dp).toInt() }
             setOnClickListener {
                 hide()
                 MacroRecorderWindow(context, accessibilityService, scope, prefs).show()
@@ -115,19 +115,26 @@ class MacroListWindow(
 
         if (macros.isEmpty()) {
             container.addView(TextView(context).apply {
-                text = "尚無 Macro，請先錄製"
-                setTextColor(Color.parseColor("#888888"))
+                text = "尚無巨集，請先錄製"
+                setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
+                textSize = 13f
                 gravity = Gravity.CENTER
-                setPadding(0, (16 * dp).toInt(), 0, (16 * dp).toInt())
+                setPadding(0, (20 * dp).toInt(), 0, (20 * dp).toInt())
             })
             return
         }
 
         macros.forEach { macro ->
+            // 每個巨集一張卡片：名稱｜重複次數步進器｜播放｜刪除
             val row = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding((4 * dp).toInt(), (6 * dp).toInt(), (4 * dp).toInt(), (6 * dp).toInt())
+                background = OverlayUi.rounded(context, OverlayUi.CHIP, 14f)
+                setPadding((12 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = (6 * dp).toInt() }
             }
 
             // Name + action count
@@ -136,46 +143,59 @@ class MacroListWindow(
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 addView(TextView(context).apply {
                     text = macro.name
-                    setTextColor(Color.WHITE)
+                    setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
                     textSize = 14f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                 })
                 addView(TextView(context).apply {
                     text = "${macro.actions.size} 個動作"
-                    setTextColor(Color.parseColor("#AAAAAA"))
+                    setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
                     textSize = 11f
                 })
             })
 
-            // Repeat count selector: ×1 → ×2 → ×3 → ×5 → ×10 → ∞
-            val repeatOptions = intArrayOf(1, 2, 3, 5, 10, 0)  // 0 = 無限
-            var repeatIdx = 0
-            val repeatBtn = TextView(context).apply {
-                text = "×1"
-                setTextColor(Color.parseColor("#F1C40F"))
-                textSize = 14f
-                setPadding((8 * dp).toInt(), (8 * dp).toInt(), (4 * dp).toInt(), (8 * dp).toInt())
-                setOnClickListener {
-                    repeatIdx = (repeatIdx + 1) % repeatOptions.size
-                    text = if (repeatOptions[repeatIdx] == 0) "∞" else "×${repeatOptions[repeatIdx]}"
-                }
+            // 重複次數步進器：1–99 次，1 再減為 ∞（0 = 無限），∞ 再加回 1
+            var repeatCount = 1
+            val repeatVal = OverlayUi.valueText(context, "×1", widthDp = 38f)
+            val updateRepeatLabel = {
+                repeatVal.text = if (repeatCount == 0) "∞" else "×$repeatCount"
             }
-            row.addView(repeatBtn)
+            row.addView(OverlayUi.iconButton(
+                context, "−", OverlayUi.TEXT_HI, sizeDp = 28f, textSizeSp = 14f
+            ).apply { setOnClickListener {
+                repeatCount = when {
+                    repeatCount == 0 -> 99
+                    repeatCount <= 1 -> 0
+                    else -> repeatCount - 1
+                }
+                updateRepeatLabel()
+            } })
+            row.addView(repeatVal)
+            row.addView(OverlayUi.iconButton(
+                context, "＋", OverlayUi.TEXT_HI, sizeDp = 28f, textSizeSp = 14f
+            ).apply { setOnClickListener {
+                repeatCount = when {
+                    repeatCount == 0 -> 1
+                    repeatCount >= 99 -> 0
+                    else -> repeatCount + 1
+                }
+                updateRepeatLabel()
+            } })
 
             // Play button
-            row.addView(TextView(context).apply {
-                text = "▶"
-                setTextColor(Color.parseColor("#2ECC71"))
-                textSize = 20f
-                setPadding((12 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
-                setOnClickListener { playMacro(macro, repeatOptions[repeatIdx]) }
+            row.addView(OverlayUi.iconButton(
+                context, "▶", OverlayUi.ACCENT, sizeDp = 36f, textSizeSp = 14f,
+                chipColor = OverlayUi.ACCENT_CHIP
+            ).apply {
+                (layoutParams as LinearLayout.LayoutParams).marginStart = (6 * dp).toInt()
+                setOnClickListener { playMacro(macro, repeatCount) }
             })
 
             // Delete button
-            row.addView(TextView(context).apply {
-                text = "🗑"
-                setTextColor(Color.parseColor("#E74C3C"))
-                textSize = 16f
-                setPadding((4 * dp).toInt(), (8 * dp).toInt(), (4 * dp).toInt(), (8 * dp).toInt())
+            row.addView(OverlayUi.iconButton(
+                context, "🗑", OverlayUi.DANGER, sizeDp = 32f, textSizeSp = 13f
+            ).apply {
                 setOnClickListener {
                     MacroStorage.delete(context, macro.id)
                     refresh()
@@ -183,17 +203,6 @@ class MacroListWindow(
             })
 
             container.addView(row)
-
-            // Separator
-            container.addView(android.view.View(context).apply {
-                setBackgroundColor(Color.parseColor("#33FFFFFF"))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 1
-                ).apply {
-                    val m = (2 * dp).toInt()
-                    setMargins(0, m, 0, m)
-                }
-            })
         }
     }
 
@@ -359,22 +368,18 @@ class MacroListWindow(
         val bar = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#DD1A252F")); cornerRadius = 20f
-            }
-            setPadding((12 * dp).toInt(), (6 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt())
+            background = OverlayUi.rounded(context, OverlayUi.SURFACE, 22f, stroked = true)
+            setPadding((14 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
         }
         stopBarLabel = TextView(context).apply {
             text = "🔁 $name"
-            setTextColor(Color.WHITE); textSize = 13f
-            setPadding(0, 0, (12 * dp).toInt(), 0)
+            setTextColor(Color.parseColor(OverlayUi.TEXT_HI)); textSize = 13f
+            setPadding(0, 0, (10 * dp).toInt(), 0)
         }
         bar.addView(stopBarLabel)
-        bar.addView(TextView(context).apply {
-            text = "■ 停止"
-            setTextColor(Color.parseColor("#E74C3C")); textSize = 14f
-            setOnClickListener { stopRequested = true }
-        })
+        bar.addView(OverlayUi.pillButton(
+            context, "■ 停止", textColor = OverlayUi.DANGER
+        ).apply { setOnClickListener { stopRequested = true } })
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
