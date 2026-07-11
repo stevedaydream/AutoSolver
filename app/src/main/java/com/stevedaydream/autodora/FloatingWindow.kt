@@ -39,7 +39,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private lateinit var statusParams: WindowManager.LayoutParams  // 狀態卡獨立視窗
 
     private lateinit var topRow: LinearLayout
-    private lateinit var toggleBtn: TextView
+    private lateinit var toggleBtn: ImageView
     private lateinit var menuLayout: LinearLayout
     private lateinit var statusCard: LinearLayout
     private lateinit var statusDot: View
@@ -134,12 +134,12 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
-        toggleBtn = TextView(context).apply {
-            text = "🤖"; textSize = 22f; gravity = Gravity.CENTER
-            includeFontPadding = false
+        toggleBtn = ImageView(context).apply {
+            setImageResource(R.drawable.icon01)
             val size = (52 * dp).toInt()
             layoutParams = LinearLayout.LayoutParams(size, size)
             background = OverlayUi.circle(context, OverlayUi.SURFACE, stroked = true)
+            setPadding((8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
         }
         // 選單列直接放進 topRow（7 顆 44dp 按鈕 + 分隔線 ≈ 337dp，任何螢幕都放得下，
         // 不需要 HorizontalScrollView — 它在 WRAP_CONTENT overlay 視窗下量測會塌縮）
