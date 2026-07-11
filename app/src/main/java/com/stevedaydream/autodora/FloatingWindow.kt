@@ -41,6 +41,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private lateinit var topRow: LinearLayout
     private lateinit var toggleBtn: ImageView
     private lateinit var menuLayout: LinearLayout
+    private lateinit var menuScrollView: HorizontalScrollView
     private lateinit var statusCard: LinearLayout
     private lateinit var statusDot: View
     private lateinit var statusLabel: TextView
@@ -141,14 +142,30 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             background = OverlayUi.circle(context, OverlayUi.SURFACE, stroked = true)
             setPadding((8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
         }
-        // 選單列直接放進 topRow（7 顆 44dp 按鈕 + 分隔線 ≈ 337dp，任何螢幕都放得下，
-        // 不需要 HorizontalScrollView — 它在 WRAP_CONTENT overlay 視窗下量測會塌縮）
         menuLayout = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE
             background = OverlayUi.rounded(context, OverlayUi.SURFACE, 26f, stroked = true)
             setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        menuScrollView = object : HorizontalScrollView(context) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val screenW = context.resources.displayMetrics.widthPixels
+                val maxW = screenW - (76 * dp).toInt()
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+                if (measuredWidth > maxW) {
+                    setMeasuredDimension(maxW, measuredHeight)
+                }
+            }
+        }.apply {
+            isFillViewport = true
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            addView(menuLayout)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { marginStart = (8 * dp).toInt() }
@@ -200,7 +217,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             // ── 進入 auto 模式：收折選單，只留 autoBar + statusCard ──
             isAutoRunning = true; autoRound = 0; pathOverlayWindow.hide()
             isExpanded = false; isSettingsOpen = false
-            menuLayout.visibility = View.GONE
+            menuScrollView.visibility = View.GONE
             settingsPanel.visibility  = View.GONE
             autoBar.visibility        = View.VISIBLE
             statusCard.visibility     = View.VISIBLE
@@ -299,7 +316,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         autoBar.addView(btnAutoBarStop)
 
         topRow.addView(toggleBtn)
-        topRow.addView(menuLayout)
+        topRow.addView(menuScrollView)
         topRow.addView(autoBar)
     }
 
@@ -591,7 +608,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private fun toggleExpand() {
         if (isAutoRunning) return  // 自動執行中不允許展開選單
         isExpanded = !isExpanded
-        menuLayout.visibility = if (isExpanded) View.VISIBLE else View.GONE
+        menuScrollView.visibility = if (isExpanded) View.VISIBLE else View.GONE
         statusCard.visibility = if (isExpanded) View.VISIBLE else View.GONE
         if (!isExpanded) { isSettingsOpen = false; settingsPanel.visibility = View.GONE }
         refreshWindowLayout()
