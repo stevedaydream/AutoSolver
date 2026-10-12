@@ -3,6 +3,24 @@
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-ReleaseNotes {
+    $previousEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        $tags = git tag --merged HEAD --sort=-version:refname
+        if ($LASTEXITCODE -ne 0) { throw '無法讀取版本標籤。' }
+        $previousTag = $tags | Where-Object { $_ -match '^v\d+(\.\d+)*$' } | Select-Object -First 1
+        $range = if ($previousTag) { "$previousTag..HEAD" } else { 'HEAD' }
+        $commits = git -c i18n.logOutputEncoding=utf-8 log --reverse '--format=- %s (%h)%n%w(0,2,2)%b' $range
+        if ($LASTEXITCODE -ne 0) { throw '無法讀取 commit 更新內容。' }
+        $summary = if ($commits) { ($commits -join "`n").TrimEnd() } else { '本次沒有新增 commit。' }
+        "## 更新內容`n`n$summary`n"
+    } finally {
+        [Console]::OutputEncoding = $previousEncoding
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
@@ -57,9 +75,12 @@ if (git tag -l "v$Version") {
     exit 1
 }
 
+# 在版本提交之前收集內容；首次發版包含全部歷史。
+$releaseNotes = Get-ReleaseNotes
+
 # --- 1. Bump version in app/build.gradle.kts -----------------------
 $gradle = Join-Path $repoRoot "app\build.gradle.kts"
-$content = Get-Content $gradle -Raw
+$content = Get-Content $gradle -Raw -Encoding UTF8
 $m = [regex]::Match($content, 'versionCode = (\d+)')
 if (-not $m.Success) { Write-Host "[ERROR] versionCode not found in build.gradle.kts"; exit 1 }
 $newCode = [int]$m.Groups[1].Value + 1
@@ -101,6 +122,13 @@ if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] git push tag failed"; exit 1 }
 Write-Host "[4/5] Pushed main + tag to origin"
 
 # --- 5. GitHub release (in-app updater reads /releases/latest) ------
-gh release create "v$Version" $namedApk --title "AutoDora v$Version" --generate-notes
-if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] gh release create failed"; exit 1 }
+$notesFile = [System.IO.Path]::GetTempFileName()
+try {
+    [System.IO.File]::WriteAllText($notesFile, $releaseNotes, (New-Object System.Text.UTF8Encoding $false))
+    gh release create "v$Version" $namedApk --title "AutoDora v$Version" --notes-file $notesFile
+    $releaseExitCode = $LASTEXITCODE
+} finally {
+    Remove-Item -LiteralPath $notesFile -Force
+}
+if ($releaseExitCode -ne 0) { Write-Host "[ERROR] gh release create failed"; exit 1 }
 Write-Host "[5/5] Release v$Version published. In-app updater will now offer it."
