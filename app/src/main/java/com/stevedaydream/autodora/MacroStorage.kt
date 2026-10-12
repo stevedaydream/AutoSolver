@@ -34,11 +34,21 @@ object MacroStorage {
             put("createdAt", macro.createdAt)
             put("actions", JSONArray().also { arr -> macro.actions.forEach { arr.put(it.toJson()) } })
         }
-        file(ctx, macro.id).writeText(obj.toString())
+        val target = android.util.AtomicFile(file(ctx, macro.id))
+        val stream = target.startWrite()
+        try {
+            stream.write(obj.toString().toByteArray(Charsets.UTF_8))
+            target.finishWrite(stream)
+        } catch (e: Exception) {
+            target.failWrite(stream)
+            throw e
+        }
     }
 
     fun delete(ctx: Context, id: String) {
+        val images = load(ctx, id)?.actions?.mapNotNull { it.preview?.image }.orEmpty()
         file(ctx, id).delete()
+        MacroImages.discard(ctx, images)
     }
 
     fun load(ctx: Context, id: String): Macro? {

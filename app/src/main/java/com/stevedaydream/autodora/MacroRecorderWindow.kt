@@ -19,6 +19,11 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -69,6 +74,14 @@ class MacroRecorderWindow(
     private var touchDownX = 0f
     private var touchDownY = 0f
     private var touchDownTime = 0L
+    private val touchGate = RecordingTouchGate()
+    private var replaying = false
+    private var finishing = false
+    private var closed = false
+    private var pendingGap = 0L
+    private var frameCapture: Deferred<MacroPreview?>? = null
+    private var recordingJob: Job? = null
+    private val capturedImages = mutableSetOf<String>()
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -333,26 +346,42 @@ class MacroRecorderWindow(
     private fun buildOverlayView(): View = object : View(context) {
         override fun onTouchEvent(event: MotionEvent): Boolean {
             if (controlBarHeight > 0 && event.y < controlBarHeight) return false
-            if (isPaused) return true
+            if (isPaused || replaying || finishing) return true
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    val now = System.currentTimeMillis()
-                    if (lastActionTime > 0) {
-                        val gap = now - lastActionTime
-                        if (gap > 300L) actions.add(MacroAction.Wait(gap))
+                    if (!touchGate.down(event.downTime)) return true
+                    frameCapture = scope.async(Dispatchers.IO) {
+                        val frame = runCatching { MacroImages.capture(context) }.getOrNull()
+                        withContext(NonCancellable + Dispatchers.Main) {
+                            frame?.let {
+                                capturedImages.add(it.image)
+                                if (closed) MacroImages.discard(context, listOf(it.image))
+                            }
+                        }
+                        frame
                     }
+                    val now = System.currentTimeMillis()
+                    pendingGap = if (lastActionTime > 0) now - lastActionTime else 0L
                     touchDownX = event.rawX; touchDownY = event.rawY
                     touchDownTime = now
                     touchPath.clear()
                     touchPath.add(Pair(event.rawX, event.rawY))
                 }
-                MotionEvent.ACTION_MOVE -> touchPath.add(Pair(event.rawX, event.rawY))
+                MotionEvent.ACTION_MOVE -> if (touchGate.matches(event.downTime)) touchPath.add(Pair(event.rawX, event.rawY))
+                MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN -> {
+                    touchGate.cancel()
+                    touchPath.clear()
+                }
                 MotionEvent.ACTION_UP -> {
+                    if (!touchGate.up(event.downTime)) return true
                     val elapsed = System.currentTimeMillis() - touchDownTime
                     val dx = event.rawX - touchDownX; val dy = event.rawY - touchDownY
-                    val dist = hypot(dx.toDouble(), dy.toDouble())
+                    val dist = maxOf(hypot(dx.toDouble(), dy.toDouble()), touchPath.maxOfOrNull {
+                        hypot((it.first - touchDownX).toDouble(), (it.second - touchDownY).toDouble())
+                    } ?: 0.0)
                     val dp20 = 20 * context.resources.displayMetrics.density
+                    touchPath.add(Pair(event.rawX, event.rawY))
 
                     val action: MacroAction = if (dist < dp20) {
                         MacroAction.Tap(touchDownX, touchDownY)
@@ -365,13 +394,19 @@ class MacroRecorderWindow(
                             MacroAction.Swipe(touchPath.toList(), elapsed.coerceAtLeast(200L))
                         }
                     }
-                    actions.add(action)
-                    updateStatusText()
 
                     // 切穿透 → 重放給遊戲 → 恢復攔截，lastActionTime 在重放完成後才設定
                     val rl = rootLayout ?: return true
                     val rp = recordingParams ?: return true
-                    when (action) {
+                    replaying = true
+                    recordingJob = scope.launch {
+                      try {
+                        action.preview = frameCapture?.await()
+                        action.preview?.let { capturedImages.add(it.image) }
+                        if (pendingGap > 300L) actions.add(MacroAction.Wait(pendingGap))
+                        actions.add(action)
+                        updateStatusText()
+                        val replay = when (action) {
                         is MacroAction.Tap ->
                             dispatchTapNow(action.x, action.y, action.holdMs, rl, rp) {
                                 lastActionTime = System.currentTimeMillis()
@@ -384,7 +419,10 @@ class MacroRecorderWindow(
                             dispatchSwipeNow(action.path, action.durationMs, rl, rp) {
                                 lastActionTime = System.currentTimeMillis()
                             }
-                        else -> lastActionTime = System.currentTimeMillis()
+                        else -> null
+                        }
+                        replay?.join()
+                      } finally { replaying = false }
                     }
                 }
             }
@@ -402,17 +440,22 @@ class MacroRecorderWindow(
         x: Float, y: Float, holdMs: Long,
         windowView: View?, params: WindowManager.LayoutParams?,
         onComplete: (() -> Unit)? = null
-    ) {
+    ): Job? {
         if (windowView == null || params == null || !windowView.isAttachedToWindow) {
-            onComplete?.invoke(); return
+            onComplete?.invoke(); return null
         }
         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         windowManager.updateViewLayout(windowView, params)
-        scope.launch {
-            accessibilityService.performTap(x, y, holdMs)
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            windowManager.updateViewLayout(windowView, params)
-            onComplete?.invoke()
+        return scope.launch {
+            try { accessibilityService.performTap(x, y, holdMs) }
+            finally {
+              withContext(NonCancellable) {
+                delay(32)
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                if (windowView.isAttachedToWindow) windowManager.updateViewLayout(windowView, params)
+                onComplete?.invoke()
+              }
+            }
         }
     }
 
@@ -420,17 +463,22 @@ class MacroRecorderWindow(
         path: List<Pair<Float, Float>>, durationMs: Long,
         windowView: View?, params: WindowManager.LayoutParams?,
         onComplete: (() -> Unit)? = null
-    ) {
+    ): Job? {
         if (windowView == null || params == null || !windowView.isAttachedToWindow) {
-            onComplete?.invoke(); return
+            onComplete?.invoke(); return null
         }
         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         windowManager.updateViewLayout(windowView, params)
-        scope.launch {
-            accessibilityService.performOrbSwipe(path, durationMs)
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            windowManager.updateViewLayout(windowView, params)
-            onComplete?.invoke()
+        return scope.launch {
+            try { accessibilityService.performOrbSwipe(path, durationMs) }
+            finally {
+              withContext(NonCancellable) {
+                delay(32)
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                if (windowView.isAttachedToWindow) windowManager.updateViewLayout(windowView, params)
+                onComplete?.invoke()
+              }
+            }
         }
     }
 
@@ -450,7 +498,10 @@ class MacroRecorderWindow(
         val btnFixed = makeBtn("📷固定盤", "#E67E22") { captureSignature() }
         val btnAuto  = makeBtn("🎯自動盤", "#3498DB") { addAutoBoard() }
         pauseBtn = makeBtn("⏸", "#F1C40F") {
-            isPaused = !isPaused; pauseBtn?.text = if (isPaused) "▶" else "⏸"; updateStatusText()
+            touchGate.cancel()
+            isPaused = !isPaused
+            lastActionTime = System.currentTimeMillis()
+            pauseBtn?.text = if (isPaused) "▶" else "⏸"; updateStatusText()
         }
         val btnUndo = makeBtn("🗑", "#95A5A6") {
             if (actions.isNotEmpty()) { actions.removeAt(actions.lastIndex); updateStatusText() }
@@ -510,7 +561,7 @@ class MacroRecorderWindow(
             val label = when (it) {
                 is MacroAction.Tap -> "點擊"
                 is MacroAction.Swipe -> "滑動"
-                is MacroAction.Wait -> "等待${(it.ms + 500) / 1000}s"
+                is MacroAction.Wait -> "等待${MacroTime.seconds(it.ms)}秒"
                 is MacroAction.AutoBoard -> "自動盤"
                 is MacroAction.UseSkill -> "技能${it.skillNumber}"
                 is MacroAction.FixedBoard -> "固定盤"
@@ -523,8 +574,14 @@ class MacroRecorderWindow(
     }
 
     private fun finishRecording() {
+        if (finishing) return
+        finishing = true
+        touchGate.cancel()
+        scope.launch {
+          recordingJob?.join()
         if (actions.isEmpty()) {
-            Toast.makeText(context, "尚未錄製任何動作", Toast.LENGTH_SHORT).show(); return
+            finishing = false
+            Toast.makeText(context, "尚未錄製任何動作", Toast.LENGTH_SHORT).show(); return@launch
         }
         showNameDialog { name ->
             val macro = Macro(
@@ -534,6 +591,7 @@ class MacroRecorderWindow(
             MacroStorage.save(context, macro)
             Toast.makeText(context, "已儲存：${macro.name}（${macro.actions.size}個動作）", Toast.LENGTH_SHORT).show()
             hide()
+        }
         }
     }
 
@@ -561,7 +619,11 @@ class MacroRecorderWindow(
             setPadding(0, (12 * dp).toInt(), 0, 0)
             addView(Button(context).apply {
                 text = "取消"; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
-                setOnClickListener { if (dialogView.isAttachedToWindow) windowManager.removeView(dialogView) }
+                setOnClickListener {
+                    dismissDialog(dialogView)
+                    finishing = false
+                    lastActionTime = System.currentTimeMillis()
+                }
             })
             addView(Button(context).apply {
                 text = "儲存"
@@ -582,6 +644,7 @@ class MacroRecorderWindow(
                             WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
         }
         windowManager.addView(dialogView, params)
+        activeDialogs.add(dialogView)
         editText.post { editText.requestFocus() }
     }
 
@@ -602,6 +665,14 @@ class MacroRecorderWindow(
     }
 
     fun hide() {
+        closed = true
+        finishing = true
+        touchGate.cancel()
+        recordingJob?.cancel()
+        frameCapture?.let { capture -> scope.launch {
+            runCatching { capture.await() }.getOrNull()?.let { capturedImages.add(it.image) }
+            MacroImages.discard(context, capturedImages)
+        } }
         activeDialogs.toList().forEach { if (it.isAttachedToWindow) windowManager.removeView(it) }
         activeDialogs.clear()
         memberOverlayView?.let { if (it.isAttachedToWindow) windowManager.removeView(it) }

@@ -11,6 +11,9 @@ local.properties
 .cxx
 *.apk
 *.aab
+*.jks
+*.keystore
+secret.md
 
 # Claude Code 本地設定
 .claude/

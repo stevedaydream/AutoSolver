@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 sealed class MacroAction {
+    var preview: MacroPreview? = null
 
     /** 單次點擊（開技能、確認按鈕等） */
     data class Tap(val x: Float, val y: Float, val holdMs: Long = 80L) : MacroAction()
@@ -90,7 +91,7 @@ sealed class MacroAction {
             })
             put("durationMs", durationMs)
         }
-    }
+    }.also { obj -> preview?.let { obj.put("preview", it.toJson()) } }
 
     companion object {
         fun fromJson(obj: JSONObject): MacroAction = when (obj.getString("type")) {
@@ -137,6 +138,8 @@ sealed class MacroAction {
                 obj.optDouble("stage2Y", 0.0).toFloat()
             )
             else -> Wait(0L)
+        }.also { action ->
+            obj.optJSONObject("preview")?.let { action.preview = runCatching { MacroPreview.fromJson(it) }.getOrNull() }
         }
     }
 }

@@ -27,6 +27,7 @@ class MacroListWindow(
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var rootLayout: LinearLayout? = null
     private var listContainer: LinearLayout? = null
+    private var editor: MacroEditorWindow? = null
     private var isPlaying = false
     @Volatile private var stopRequested = false
     private var stopBar: LinearLayout? = null
@@ -216,151 +217,9 @@ class MacroListWindow(
     }
 
     private fun showEditActionsDialog(macro: Macro) {
-        val dp = context.resources.displayMetrics.density
-        val editedActions = macro.actions.toMutableList()
-
-        val dialogView = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = OverlayUi.rounded(context, OverlayUi.SURFACE_CARD, 20f, stroked = true)
-            setPadding((16 * dp).toInt(), (16 * dp).toInt(), (16 * dp).toInt(), (16 * dp).toInt())
-        }
-
-        // Title text
-        val titleText = TextView(context).apply {
-            text = "編輯動作: ${macro.name}"
-            setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
-            textSize = 15f
-            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
-            setPadding(0, 0, 0, (10 * dp).toInt())
-        }
-        dialogView.addView(titleText)
-
-        // ScrollView for action items
-        val scrollView = ScrollView(context).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                (240 * dp).toInt()
-            )
-        }
-        val itemsContainer = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        scrollView.addView(itemsContainer)
-        dialogView.addView(scrollView)
-
-        // Function to refresh the list of actions in the editor dialog
-        fun refreshEditorList() {
-            itemsContainer.removeAllViews()
-            if (editedActions.isEmpty()) {
-                itemsContainer.addView(TextView(context).apply {
-                    text = "無動作"
-                    setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
-                    textSize = 13f
-                    gravity = Gravity.CENTER
-                    setPadding(0, (20 * dp).toInt(), 0, (20 * dp).toInt())
-                })
-                return
-            }
-
-            editedActions.forEachIndexed { index, action ->
-                val itemRow = LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding((8 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt())
-                    background = OverlayUi.rounded(context, OverlayUi.CHIP, 8f)
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    ).apply { bottomMargin = (4 * dp).toInt() }
-                }
-
-                // Action description text
-                val actionText = TextView(context).apply {
-                    val actionDesc = when (action) {
-                        is MacroAction.Tap -> "點擊 (${action.x.toInt()}, ${action.y.toInt()})"
-                        is MacroAction.Swipe -> "滑動 (長度: ${action.path.size})"
-                        is MacroAction.Wait -> "等待 ${action.ms}ms"
-                        is MacroAction.AutoBoard -> "自動解盤 (步數: ${action.steps})"
-                        is MacroAction.UseSkill -> "成員 ${action.memberSlot + 1} 技能 ${action.skillNumber}"
-                        is MacroAction.FixedBoard -> "固定盤面"
-                    }
-                    text = "${index + 1}. $actionDesc"
-                    setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
-                    textSize = 12f
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                }
-                itemRow.addView(actionText)
-
-                // Delete button for this specific action
-                val delActBtn = OverlayUi.iconButton(context, "🗑", OverlayUi.DANGER, sizeDp = 28f, textSizeSp = 12f)
-                delActBtn.setOnClickListener {
-                    editedActions.removeAt(index)
-                    refreshEditorList()
-                }
-                itemRow.addView(delActBtn)
-
-                itemsContainer.addView(itemRow)
-            }
-        }
-
-        refreshEditorList()
-
-        // Bottom action buttons: Save & Cancel
-        val buttonRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-            setPadding(0, (12 * dp).toInt(), 0, 0)
-        }
-
-        // Cancel button
-        val btnCancel = OverlayUi.pillButton(context, "取消", textColor = OverlayUi.TEXT_LO).apply {
-            setOnClickListener {
-                if (dialogView.isAttachedToWindow) {
-                    windowManager.removeView(dialogView)
-                }
-            }
-        }
-
-        // Save button
-        val btnSave = OverlayUi.pillButton(context, "儲存", textColor = OverlayUi.ACCENT, chipColor = OverlayUi.ACCENT_CHIP).apply {
-            setOnClickListener {
-                val updatedMacro = Macro(
-                    id = macro.id,
-                    name = macro.name,
-                    actions = editedActions.toList(),
-                    createdAt = macro.createdAt
-                )
-                MacroStorage.save(context, updatedMacro)
-                Toast.makeText(context, "巨集動作已更新", Toast.LENGTH_SHORT).show()
-                if (dialogView.isAttachedToWindow) {
-                    windowManager.removeView(dialogView)
-                }
-                refresh() // Refresh the macro list view
-            }
-        }
-
-        buttonRow.addView(btnCancel)
-        val gap = View(context).apply {
-            layoutParams = LinearLayout.LayoutParams((8 * dp).toInt(), ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-        buttonRow.addView(gap)
-        buttonRow.addView(btnSave)
-        dialogView.addView(buttonRow)
-
-        val params = WindowManager.LayoutParams(
-            (280 * dp).toInt(),
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_DIM_BEHIND,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.CENTER
-            dimAmount = 0.6f
-        }
-
-        windowManager.addView(dialogView, params)
+        hide()
+        editor = MacroEditorWindow(context, scope, macro) { editor = null; show() }.also { it.show() }
     }
-
     private fun playMacro(macro: Macro, repeat: Int) {
         if (isPlaying) {
             Toast.makeText(context, "播放中，請稍後", Toast.LENGTH_SHORT).show()
@@ -406,7 +265,7 @@ class MacroListWindow(
             val actionDesc = when (action) {
                 is MacroAction.Tap -> "點擊"
                 is MacroAction.Swipe -> "滑動"
-                is MacroAction.Wait -> "等待 ${action.ms}ms"
+                is MacroAction.Wait -> "等待 ${MacroTime.seconds(action.ms)} 秒"
                 is MacroAction.AutoBoard -> "自動盤"
                 is MacroAction.UseSkill -> "成員 ${action.memberSlot + 1} 技能 ${action.skillNumber}"
                 is MacroAction.FixedBoard -> "固定盤"
@@ -582,6 +441,8 @@ class MacroListWindow(
         a.indices.all { r -> a[r].size == b[r].size && a[r].indices.all { c -> a[r][c] == b[r][c] } }
 
     fun hide() {
+        editor?.dismiss()
+        editor = null
         rootLayout?.let { if (it.isAttachedToWindow) windowManager.removeView(it) }
         rootLayout = null
         listContainer = null
