@@ -59,6 +59,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     // 解算/執行設定：全部持久化，重開 App 保留，巨集播放也讀同一組值
     private var currentSteps = prefs.getInt("steps", 35)
     private var strategyMode = prefs.getInt("strategyMode", 0) // 0: 一般, 1: 平鋪, 2: 直排昇華, 3: ML
+    private var shapeGoals = ShapeGoal.readList(org.json.JSONArray(prefs.getString(ShapeGoal.PREF_KEY, "[]")))
     private var startMode = prefs.getInt("startMode", 0)       // 0: 全盤, 1: 左下, 2: 右下
     private var currentGestureMs = prefs.getLong("gestureMs", 5000L)             // 轉珠總時間（毫秒）
     private var currentRoundIntervalMs = prefs.getLong("roundIntervalMs", 4500L) // 自動輪間隔（毫秒）
@@ -508,6 +509,66 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             refreshWindowLayout()
         }
 
+        settingsContent.addView(OverlayUi.sectionLabel(context, "版型解盾 · 全部同時完成"))
+        settingsContent.addView(TextView(context).apply {
+            text = "首批獨立五顆、不黏同色，T／L 可旋轉。\n有條件時使用搜尋引擎；未找到符合路徑就停止。"
+            textSize = 12f
+            setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
+        })
+        val goalRows = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        settingsContent.addView(goalRows)
+        val addGoal = OverlayUi.pillButton(context, "＋ 加入版型條件")
+        val orbTypes = listOf(null) + BoardAnalyzer.OrbType.entries.filter { it != BoardAnalyzer.OrbType.UNKNOWN }
+        val orbLabels = listOf("任意", "水", "火", "木", "光", "暗", "心")
+        fun saveGoals() {
+            prefs.edit().putString(ShapeGoal.PREF_KEY, ShapeGoal.writeList(shapeGoals).toString()).apply()
+            addGoal.isEnabled = shapeGoals.size < ShapeGoal.MAX_GOALS
+        }
+        fun renderGoals() {
+            goalRows.removeAllViews()
+            shapeGoals.forEachIndexed { index, goal ->
+                val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                fun spinner(labels: List<String>, selected: Int, changed: (Int) -> Unit) = Spinner(context).apply {
+                    adapter = object : ArrayAdapter<String>(context, android.R.layout.simple_spinner_item, labels) {
+                        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                            super.getView(position, convertView, parent).also { (it as TextView).setTextColor(Color.parseColor(OverlayUi.TEXT_HI)) }
+                    }.also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                    setSelection(selected)
+                    onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { changed(position) }
+                        override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                    }
+                }
+                row.addView(spinner(ShapePattern.entries.map { it.label }, goal.pattern.ordinal) { selected ->
+                    if (index < shapeGoals.size) {
+                        shapeGoals = shapeGoals.toMutableList().also { it[index] = it[index].copy(pattern = ShapePattern.entries[selected]) }
+                        saveGoals()
+                    }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                row.addView(spinner(orbLabels, orbTypes.indexOf(goal.type)) { selected ->
+                    if (index < shapeGoals.size) {
+                        shapeGoals = shapeGoals.toMutableList().also { it[index] = it[index].copy(type = orbTypes[selected]) }
+                        saveGoals()
+                    }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                row.addView(OverlayUi.pillButton(context, "刪除").apply {
+                    setOnClickListener {
+                        shapeGoals = shapeGoals.filterIndexed { i, _ -> i != index }
+                        saveGoals(); renderGoals()
+                    }
+                })
+                goalRows.addView(row)
+            }
+        }
+        addGoal.setOnClickListener {
+            if (shapeGoals.size < ShapeGoal.MAX_GOALS) {
+                shapeGoals = shapeGoals + ShapeGoal(ShapePattern.T)
+                saveGoals(); renderGoals()
+            }
+        }
+        settingsContent.addView(addGoal)
+        saveGoals(); renderGoals()
+
         // ── 起手點位置 ───────────────────────────────────────────
         settingsContent.addView(OverlayUi.sectionLabel(context, "起手點位置"))
         val rgStart = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
@@ -784,7 +845,8 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     ): Pair<List<Pair<Float, Float>>, Int>? = withContext(Dispatchers.Default) {
         val analyzer = BoardAnalyzer()
         val board    = analyzer.analyzeBoard(bitmap, sX, sY, oS)
-        val result: Pair<List<Pair<Float, Float>>, Int> = if (strategyMode == 3) {
+        val goals = shapeGoals
+        val result: Pair<List<Pair<Float, Float>>, Int> = if (strategyMode == 3 && goals.isEmpty()) {
             val ml = getOrCreateMLPlanner()
             if (ml != null) {
                 analyzer.calculateMLPath(
@@ -808,7 +870,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 startX = sX.toFloat(), startY = sY.toFloat(),
                 is8Way = is8Way, strategyMode = strategyMode,
                 startMode = startMode, steps = currentSteps,
-                beamWidth = beamWidth
+                beamWidth = beamWidth, shapeGoals = goals
             )
         }
         if (!bitmap.isRecycled) bitmap.recycle()

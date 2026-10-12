@@ -16,7 +16,7 @@ sealed class MacroAction {
     data class Wait(val ms: Long) : MacroAction()
 
     /** 自動辨識盤面 → 用現有演算法求解 */
-    data class AutoBoard(val steps: Int = 35, val strategyMode: Int = 0) : MacroAction()
+    data class AutoBoard(val steps: Int = 35, val strategyMode: Int = 0, val shapeGoals: List<ShapeGoal> = emptyList()) : MacroAction()
 
     /** 開技能：點擊隊員按鈕啟動技能，hasStage2=true 時需額外記錄第二段目標點 */
     data class UseSkill(
@@ -69,6 +69,7 @@ sealed class MacroAction {
         is Wait -> JSONObject().apply { put("type", "wait"); put("ms", ms) }
         is AutoBoard -> JSONObject().apply {
             put("type", "autoBoard"); put("steps", steps); put("strategyMode", strategyMode)
+            if (shapeGoals.isNotEmpty()) put("shapeGoals", ShapeGoal.writeList(shapeGoals))
         }
         is UseSkill -> JSONObject().apply {
             put("type", "useSkill")
@@ -111,7 +112,7 @@ sealed class MacroAction {
                 )
             }
             "wait" -> Wait(obj.getLong("ms"))
-            "autoBoard" -> AutoBoard(obj.optInt("steps", 35), obj.optInt("strategyMode", 0))
+            "autoBoard" -> AutoBoard(obj.optInt("steps", 35), obj.optInt("strategyMode", 0), ShapeGoal.readList(obj.optJSONArray("shapeGoals")))
             "fixedBoard" -> {
                 val boardArr = obj.getJSONArray("board")
                 val board = Array(boardArr.length()) { r ->

@@ -40,6 +40,7 @@ class BoardAnalyzer {
         var pathLen = 0
         var r = 0; var c = 0
         var score = 0; var combos = 0
+        internal var shapes = ShapeEvaluation(0, 0)
 
         fun copyBoard(source: Array<Array<OrbType>>) {
             for (i in 0 until 5) for (j in 0 until 6) this.board[i][j] = source[i][j]
@@ -52,6 +53,7 @@ class BoardAnalyzer {
             this.pathLen = other.pathLen
             this.r = other.r; this.c = other.c
             this.score = other.score; this.combos = other.combos
+            this.shapes = other.shapes
         }
     }
 
@@ -429,15 +431,28 @@ class BoardAnalyzer {
         strategyMode: Int = 0, // 0: 一般, 1: 平鋪, 2: 昇華
         startMode: Int = 0,    // 0: 全盤, 1: 左下, 2: 右下
         steps: Int = 35,
-        beamWidth: Int = 200
+        beamWidth: Int = 200,
+        shapeGoals: List<ShapeGoal> = emptyList()
     ): Pair<List<Pair<Float, Float>>, Int> {
         if (!isCompleteBoard(board)) return Pair(emptyList(), 0)
+        val shapeEvaluator = shapeGoals.takeIf { it.isNotEmpty() }?.let { ShapeEvaluator(it) }
+        if (shapeEvaluator != null && !shapeEvaluator.canAttempt(board)) return Pair(emptyList(), 0)
         val maxSteps = steps.coerceIn(5, 60)
         val beam = beamWidth.coerceIn(30, 500)
 
         val nextNodes = Array(beam * 8) { SearchNode(maxSteps) }
         val currentNodes = Array(beam) { SearchNode(maxSteps) }
-        val selector = BeamSelector(beam) { nextNodes[it].score }
+        val selector = BeamSelector(beam, if (shapeEvaluator == null) null else { a, b ->
+            val left = nextNodes[a]
+            val right = nextNodes[b]
+            val satisfied = left.shapes.satisfied.compareTo(right.shapes.satisfied)
+            val potential = left.shapes.potential.compareTo(right.shapes.potential)
+            when {
+                satisfied != 0 -> satisfied
+                potential != 0 -> potential
+                else -> left.score.compareTo(right.score)
+            }
+        }) { nextNodes[it].score }
         val globalBestNode = SearchNode(maxSteps)
         globalBestNode.combos = 0; globalBestNode.score = Int.MIN_VALUE
 
@@ -498,12 +513,13 @@ class BoardAnalyzer {
                             else -> evaluateStandard(nextNode.board, nextNode.combos)
                         }
                         nextNode.score = baseScore - nextNode.pathLen * 15
+                        if (shapeEvaluator != null) nextNode.shapes = shapeEvaluator.evaluate(nextNode.board)
 
                         // 優先順序：① 分數更高（策略加成優先） ② combo 更多 ③ 步數更少
                         val isBetter = nextNode.score > globalBestNode.score ||
                             (nextNode.score == globalBestNode.score && nextNode.combos > globalBestNode.combos) ||
                             (nextNode.score == globalBestNode.score && nextNode.combos == globalBestNode.combos && nextNode.pathLen < globalBestNode.pathLen)
-                        if (isBetter) globalBestNode.copyFrom(nextNode)
+                        if (isBetter && nextNode.shapes.satisfied == shapeGoals.size) globalBestNode.copyFrom(nextNode)
                     }
                 }
             }

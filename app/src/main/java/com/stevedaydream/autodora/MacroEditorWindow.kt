@@ -138,7 +138,8 @@ class MacroEditorWindow(
         is MacroAction.Tap -> "點擊 (${action.x.toInt()}, ${action.y.toInt()}) · ${MacroTime.seconds(action.holdMs)} 秒"
         is MacroAction.Swipe -> "滑動 · ${action.path.size} 個路徑點 · ${MacroTime.seconds(action.durationMs)} 秒"
         is MacroAction.Wait -> "等待 ${MacroTime.seconds(action.ms)} 秒"
-        is MacroAction.AutoBoard -> "自動解盤 · ${action.steps} 步 · 策略 ${action.strategyMode}"
+        is MacroAction.AutoBoard -> "自動解盤 · ${action.steps} 步 · 策略 ${action.strategyMode}" +
+            if (action.shapeGoals.isEmpty()) "" else " · ${action.shapeGoals.size} 個版型"
         is MacroAction.UseSkill -> "成員 ${action.memberSlot + 1} · 技能 ${action.skillNumber}" + if (action.hasStage2) " · 含第二段" else ""
         is MacroAction.FixedBoard -> "固定盤面 · ${MacroTime.seconds(action.durationMs)} 秒"
     }

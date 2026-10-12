@@ -8,6 +8,21 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class MacroPersistenceTest {
+    @Test fun shapeGoalsRoundTripAndOldAutoBoardRemainsCompatible() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val id = MacroStorage.newId()
+        val action = MacroAction.AutoBoard(40, 1, listOf(
+            ShapeGoal(ShapePattern.T, BoardAnalyzer.OrbType.FIRE),
+            ShapeGoal(ShapePattern.L), ShapeGoal(ShapePattern.CROSS, BoardAnalyzer.OrbType.DARK)
+        ))
+        try {
+            MacroStorage.save(context, Macro(id, "版型測試", listOf(action), 1))
+            assertEquals(action, MacroStorage.load(context, id)!!.actions.single())
+            val old = MacroAction.fromJson(org.json.JSONObject("{\"type\":\"autoBoard\",\"steps\":35,\"strategyMode\":0}")) as MacroAction.AutoBoard
+            assertTrue(old.shapeGoals.isEmpty())
+        } finally { MacroStorage.delete(context, id) }
+    }
+
     @Test fun oldScriptsAndPreviewMetadataSurviveSavingAndReordering() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val id = MacroStorage.newId()

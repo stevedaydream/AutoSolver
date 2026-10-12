@@ -297,16 +297,16 @@ class MacroListWindow(
                             strategyMode = action.strategyMode,
                             startMode = startMode,
                             steps = action.steps,
-                            beamWidth = beamWidth
+                            beamWidth = beamWidth,
+                            shapeGoals = action.shapeGoals
                         )
                     }
-                    if (path.isNotEmpty()) {
-                        // 路徑已是真實螢幕座標，毋需狀態列補償
-                        val dur = ((path.size - 1).toLong() * gestureMs / action.steps.toLong())
-                            .coerceAtLeast(200L)
-                        accessibilityService.performOrbSwipe(path, dur)
-                        waitForBoardSettled(sX, sY, oS)
-                    }
+                    if (path.isEmpty()) return false
+                    // 路徑已是真實螢幕座標，毋需狀態列補償
+                    val dur = ((path.size - 1).toLong() * gestureMs / action.steps.toLong())
+                        .coerceAtLeast(200L)
+                    accessibilityService.performOrbSwipe(path, dur)
+                    waitForBoardSettled(sX, sY, oS)
                 }
                 is MacroAction.UseSkill -> {
                     accessibilityService.performTap(action.tapX, action.tapY, 100L)

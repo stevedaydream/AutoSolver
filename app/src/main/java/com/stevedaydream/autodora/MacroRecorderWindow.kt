@@ -550,7 +550,8 @@ class MacroRecorderWindow(
         // 記錄當前設定面板的步數與策略（ML 模式巨集不支援，降為一般）
         val steps = prefs.getInt("steps", 35)
         val strat = prefs.getInt("strategyMode", 0).let { if (it == 3) 0 else it }
-        actions.add(MacroAction.AutoBoard(steps, strat))
+        val goals = ShapeGoal.readList(org.json.JSONArray(prefs.getString(ShapeGoal.PREF_KEY, "[]")))
+        actions.add(MacroAction.AutoBoard(steps, strat, goals))
         lastActionTime = System.currentTimeMillis()
         updateStatusText()
         Toast.makeText(context, "已加入：自動辨識盤面", Toast.LENGTH_SHORT).show()
