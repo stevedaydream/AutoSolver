@@ -36,6 +36,17 @@ import androidx.compose.ui.unit.dp
 import com.stevedaydream.autodora.ui.theme.AutoDoraTheme
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val EXTRA_CHECK_UPDATE = "check_update"
+    }
+
+    private var updateCheckRequest by mutableStateOf(0)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_CHECK_UPDATE, false)) updateCheckRequest++
+    }
 
     // --- 修改開頭：新增 startMediaProjection 以處理截圖權限請求的回傳結果 ---
     // --- 修改開頭：獲取真實硬體螢幕解析度，解決截圖在記憶體中歪斜或偏移的問題 ---
@@ -82,18 +93,29 @@ class MainActivity : ComponentActivity() {
     // --- 修改開頭：將散落的 UI 程式碼整合進 onCreate 的 setContent 中，並修正 Settings 參照 ---
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent.getBooleanExtra(EXTRA_CHECK_UPDATE, false)) updateCheckRequest++
         enableEdgeToEdge()
         setContent {
             AutoDoraTheme {
                 // ── GitHub Release 自動更新檢查 ──
                 var updateInfo by remember { mutableStateOf<UpdateChecker.ReleaseInfo?>(null) }
-                LaunchedEffect(Unit) {
-                    val current = try {
+                var checkingUpdate by remember { mutableStateOf(false) }
+                var updateStatus by remember { mutableStateOf("") }
+                val currentVersion = remember {
+                    try {
                         packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
                     } catch (e: Exception) { "0" }
+                }
+                LaunchedEffect(updateCheckRequest) {
+                    checkingUpdate = true
+                    if (updateCheckRequest > 0) updateStatus = "正在檢查更新…"
                     val latest = UpdateChecker.fetchLatest()
-                    if (latest != null && UpdateChecker.isNewer(latest.versionName, current)) {
+                    checkingUpdate = false
+                    if (latest != null && UpdateChecker.isNewer(latest.versionName, currentVersion)) {
                         updateInfo = latest
+                        updateStatus = "有新版本 v${latest.versionName}"
+                    } else if (updateCheckRequest > 0) {
+                        updateStatus = if (latest == null) "無法檢查更新，請確認網路後重試" else "目前已是最新版本"
                     }
                 }
                 updateInfo?.let { info ->
@@ -187,6 +209,17 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Text("4. View Database")
                         }
+                        Text(
+                            text = "目前版本 v$currentVersion",
+                            modifier = Modifier.padding(top = 16.dp)
+                        )
+                        Button(
+                            onClick = { updateCheckRequest++ },
+                            enabled = !checkingUpdate
+                        ) {
+                            Text(if (checkingUpdate) "檢查中…" else "檢查更新")
+                        }
+                        if (updateStatus.isNotBlank()) Text(updateStatus)
                     }
                 }
             }

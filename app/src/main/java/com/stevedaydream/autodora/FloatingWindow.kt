@@ -290,6 +290,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         btnSettings.setOnClickListener {
             isSettingsOpen = !isSettingsOpen
             settingsPanel.visibility = if (isSettingsOpen) View.VISIBLE else View.GONE
+            statusCard.visibility = if (isSettingsOpen) View.GONE else View.VISIBLE
             refreshWindowLayout()
         }
         btnClose.setOnClickListener { hide() }
@@ -333,6 +334,22 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             ).apply { topMargin = (6 * dp).toInt() }
         }
         val accentTint = ColorStateList.valueOf(Color.parseColor(OverlayUi.ACCENT))
+
+        settingsPanel.addView(OverlayUi.sectionLabel(context, "版本更新"))
+        val currentVersion = runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "未知"
+        settingsPanel.addView(OverlayUi.valueText(context, "目前版本 v$currentVersion", 200f))
+        settingsPanel.addView(OverlayUi.pillButton(context, "檢查更新").apply {
+            setOnClickListener {
+                context.startActivity(android.content.Intent(context, MainActivity::class.java).apply {
+                    putExtra(MainActivity.EXTRA_CHECK_UPDATE, true)
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                        android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                })
+                toggleExpand()
+            }
+        })
 
         // ── 解算參數 ─────────────────────────────────────────────
         settingsPanel.addView(OverlayUi.sectionLabel(context, "解算參數"))
