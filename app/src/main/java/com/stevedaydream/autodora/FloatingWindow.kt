@@ -8,11 +8,13 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.WindowInsets
 import android.widget.*
 import kotlinx.coroutines.*
 import kotlin.math.abs
@@ -51,6 +53,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
 
     private var isExpanded = false
     private var isSettingsOpen = false
+    private var floatingPosition: Pair<Int, Int>? = null
     private val prefs = context.getSharedPreferences("AutoDoraPrefs", Context.MODE_PRIVATE)
 
     // 解算/執行設定：全部持久化，重開 App 保留，巨集播放也讀同一組值
@@ -326,21 +329,49 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         settingsPanel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            minimumWidth = (252 * dp).toInt()
-            setPadding((18 * dp).toInt(), (8 * dp).toInt(), (18 * dp).toInt(), (16 * dp).toInt())
-            background = OverlayUi.rounded(context, OverlayUi.SURFACE_CARD, 18f, stroked = true)
+            setBackgroundColor(Color.parseColor("#121A23"))
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = (6 * dp).toInt() }
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
+        val header = LinearLayout(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((18 * dp).toInt(), (8 * dp).toInt(), (18 * dp).toInt(), (8 * dp).toInt())
+        }
+        header.addView(TextView(context).apply {
+            text = "設定"
+            textSize = 20f
+            setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(OverlayUi.iconButton(context, "✕").apply {
+            contentDescription = "關閉設定"
+            setOnClickListener {
+                isSettingsOpen = false
+                settingsPanel.visibility = View.GONE
+                statusCard.visibility = if (isExpanded) View.VISIBLE else View.GONE
+                refreshWindowLayout()
+            }
+        })
+        settingsPanel.addView(header)
+        val settingsContent = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((18 * dp).toInt(), (8 * dp).toInt(), (18 * dp).toInt(), (16 * dp).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        settingsPanel.addView(ScrollView(context).apply {
+            isFillViewport = true
+            addView(settingsContent)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         val accentTint = ColorStateList.valueOf(Color.parseColor(OverlayUi.ACCENT))
 
-        settingsPanel.addView(OverlayUi.sectionLabel(context, "版本更新"))
+        settingsContent.addView(OverlayUi.sectionLabel(context, "版本更新"))
         val currentVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull() ?: "未知"
-        settingsPanel.addView(OverlayUi.valueText(context, "目前版本 v$currentVersion", 200f))
-        settingsPanel.addView(OverlayUi.pillButton(context, "檢查更新").apply {
+        settingsContent.addView(OverlayUi.valueText(context, "目前版本 v$currentVersion", 200f))
+        settingsContent.addView(OverlayUi.pillButton(context, "檢查更新").apply {
             setOnClickListener {
                 context.startActivity(android.content.Intent(context, MainActivity::class.java).apply {
                     putExtra(MainActivity.EXTRA_CHECK_UPDATE, true)
@@ -352,10 +383,10 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         })
 
         // ── 解算參數 ─────────────────────────────────────────────
-        settingsPanel.addView(OverlayUi.sectionLabel(context, "解算參數"))
+        settingsContent.addView(OverlayUi.sectionLabel(context, "解算參數"))
 
         val stepVal = OverlayUi.valueText(context, "$currentSteps")
-        settingsPanel.addView(makeStepperRow("步數", stepVal, onMinus = {
+        settingsContent.addView(makeStepperRow("步數", stepVal, onMinus = {
             currentSteps = (currentSteps - 5).coerceAtLeast(5); stepVal.text = "$currentSteps"
             prefs.edit().putInt("steps", currentSteps).apply()
         }, onPlus = {
@@ -364,7 +395,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }))
 
         val timeVal = OverlayUi.valueText(context, "${currentGestureMs / 1000}s")
-        settingsPanel.addView(makeStepperRow("轉珠時間", timeVal, onMinus = {
+        settingsContent.addView(makeStepperRow("轉珠時間", timeVal, onMinus = {
             currentGestureMs = (currentGestureMs - 1000L).coerceAtLeast(1000L)
             timeVal.text = "${currentGestureMs / 1000}s"
             prefs.edit().putLong("gestureMs", currentGestureMs).apply()
@@ -375,7 +406,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }))
 
         val intervalVal = OverlayUi.valueText(context, "${currentRoundIntervalMs / 1000}s")
-        settingsPanel.addView(makeStepperRow("輪間隔", intervalVal, onMinus = {
+        settingsContent.addView(makeStepperRow("輪間隔", intervalVal, onMinus = {
             currentRoundIntervalMs = (currentRoundIntervalMs - 1000L).coerceAtLeast(1000L)
             intervalVal.text = "${currentRoundIntervalMs / 1000}s"
             prefs.edit().putLong("roundIntervalMs", currentRoundIntervalMs).apply()
@@ -386,7 +417,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }))
 
         val beamVal = OverlayUi.valueText(context, "$beamWidth")
-        settingsPanel.addView(makeStepperRow("搜尋廣度", beamVal, onMinus = {
+        settingsContent.addView(makeStepperRow("搜尋廣度", beamVal, onMinus = {
             beamWidth = (beamWidth - 50).coerceAtLeast(50); beamVal.text = "$beamWidth"
             prefs.edit().putInt("beamWidth", beamWidth).apply()
         }, onPlus = {
@@ -405,7 +436,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 prefs.edit().putBoolean("is8Way", checked).apply()
             }
         }
-        settingsPanel.addView(cb8Way)
+        settingsContent.addView(cb8Way)
 
         // ── 計算策略 ─────────────────────────────────────────────
         fun makeRadio(idVal: Int, label: String, checked: Boolean, sizeSp: Float = 13f) =
@@ -414,13 +445,13 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 setTextColor(Color.parseColor(OverlayUi.TEXT_HI)); textSize = sizeSp
                 buttonTintList = accentTint
             }
-        settingsPanel.addView(OverlayUi.sectionLabel(context, "計算策略"))
+        settingsContent.addView(OverlayUi.sectionLabel(context, "計算策略"))
         val rgStrategy = RadioGroup(context).apply { orientation = LinearLayout.VERTICAL }
         rgStrategy.addView(makeRadio(0, "一般高 Combo", strategyMode == 0))
         rgStrategy.addView(makeRadio(1, "底層平鋪防黏珠", strategyMode == 1))
         rgStrategy.addView(makeRadio(2, "直排4顆 (昇華技)", strategyMode == 2))
         rgStrategy.addView(makeRadio(3, "ML 智能策略", strategyMode == 3))
-        settingsPanel.addView(rgStrategy)
+        settingsContent.addView(rgStrategy)
 
         // ── ML 屬性選擇面板（只在選擇 ML 模式時顯示）──
         val mlAttrPanel = LinearLayout(context).apply {
@@ -466,8 +497,8 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             }.also { rgAttr.addView(it) }
         }
         mlAttrPanel.addView(tvAttr)
-        mlAttrPanel.addView(rgAttr)
-        settingsPanel.addView(mlAttrPanel)
+        mlAttrPanel.addView(HorizontalScrollView(context).apply { addView(rgAttr) })
+        settingsContent.addView(mlAttrPanel)
 
         mlAttrPanel.visibility = if (strategyMode == 3) View.VISIBLE else View.GONE
         rgStrategy.setOnCheckedChangeListener { _, id ->
@@ -478,16 +509,16 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }
 
         // ── 起手點位置 ───────────────────────────────────────────
-        settingsPanel.addView(OverlayUi.sectionLabel(context, "起手點位置"))
+        settingsContent.addView(OverlayUi.sectionLabel(context, "起手點位置"))
         val rgStart = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
         rgStart.addView(makeRadio(0, "全盤尋找", startMode == 0, 12f))
         rgStart.addView(makeRadio(1, "左下角", startMode == 1, 12f))
         rgStart.addView(makeRadio(2, "右下角", startMode == 2, 12f))
         rgStart.setOnCheckedChangeListener { _, id -> startMode = id; prefs.edit().putInt("startMode", id).apply() }
-        settingsPanel.addView(rgStart)
+        settingsContent.addView(rgStart)
 
         // ── 校正工具 ─────────────────────────────────────────────
-        settingsPanel.addView(OverlayUi.sectionLabel(context, "校正工具"))
+        settingsContent.addView(OverlayUi.sectionLabel(context, "校正工具"))
 
         // 📷 建立樣板（原 top bar btnCalibrate）
         val btnCalib = OverlayUi.pillButton(context, "📷 建立樣板").apply {
@@ -507,12 +538,12 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             orientation = LinearLayout.HORIZONTAL
             val lpGap = {
                 LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
                 ).apply { marginEnd = (6 * dp).toInt() }
             }
-            addView(btnCalib, lpGap()); addView(btnAnalyzeSetting, lpGap()); addView(btnPlaySetting)
+            addView(btnCalib, lpGap()); addView(btnAnalyzeSetting, lpGap()); addView(btnPlaySetting, lpGap())
         }
-        settingsPanel.addView(rowCalibActions)
+        settingsContent.addView(rowCalibActions)
 
         // 調整辨識區域（開啟 BoardPreviewWindow 校正板）
         val btnPre = OverlayUi.pillButton(context, "⊞ 調整辨識區域").apply {
@@ -523,7 +554,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 toggleExpand()
             }
         }
-        settingsPanel.addView(btnPre, LinearLayout.LayoutParams(
+        settingsContent.addView(btnPre, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = (8 * dp).toInt() })
     }
@@ -645,6 +676,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         root ?: return
         root.post {
             if (!root.isAttachedToWindow) return@post
+            if (root === rootLayout && isSettingsOpen) return@post
             forceLayoutRecursive(root)
             root.measure(
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
@@ -663,7 +695,38 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     }
 
     private fun refreshWindowLayout() {
-        refreshOverlaySize(rootLayout, params)
+        if (isSettingsOpen) {
+            if (floatingPosition == null) floatingPosition = params.x to params.y
+            topRow.visibility = View.GONE
+            params.width = WindowManager.LayoutParams.MATCH_PARENT
+            params.height = WindowManager.LayoutParams.MATCH_PARENT
+            params.x = 0
+            params.y = 0
+            params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                params.setFitInsetsTypes(WindowInsets.Type.systemBars())
+                val metrics = windowManager.currentWindowMetrics
+                val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars())
+                params.height = metrics.bounds.height() - insets.top - insets.bottom
+            }
+            windowManager.updateViewLayout(rootLayout, params)
+        } else {
+            topRow.visibility = View.VISIBLE
+            floatingPosition?.let { (x, y) ->
+                params.x = x
+                params.y = y
+                params.width = WindowManager.LayoutParams.WRAP_CONTENT
+                params.height = WindowManager.LayoutParams.WRAP_CONTENT
+                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    params.setFitInsetsTypes(WindowInsets.Type.statusBars())
+                }
+                floatingPosition = null
+                windowManager.updateViewLayout(rootLayout, params)
+            }
+            refreshOverlaySize(rootLayout, params)
+        }
         if (::statusParams.isInitialized) refreshOverlaySize(statusCard, statusParams)
     }
 

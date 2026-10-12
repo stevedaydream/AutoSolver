@@ -1,5 +1,12 @@
 # 除錯紀錄
 
+**BF-003：全版無障礙懸浮視窗蓋住導覽列**
+- **問題描述：** 設定改成 MATCH_PARENT 後，Android 16 的無障礙懸浮視窗延伸至導覽列，遮住系統按鈕。
+- **嘗試過程：** 移除 LAYOUT_IN_SCREEN、指定 systemBars fitInsets，截圖仍顯示導覽列被覆蓋；再以 WindowMetrics 扣除系統列高度。
+- **根本原因：** 此模擬器的 ACCESSIBILITY_OVERLAY 全高視窗不能僅靠 fitInsets 避開底部導覽列。
+- **最終解法：** API 30 以上使用 WindowMetrics 與 getInsetsIgnoringVisibility(systemBars) 明確限制設定視窗高度；關閉還原原視窗參數。
+- **牽扯檔案：** FloatingWindow.kt。
+
 **BF-001：本機 Java 25 JBR 無法建置**
 - **問題描述：** Gradle Kotlin 設定階段出現 `IllegalArgumentException: 25.0.3`。
 - **嘗試過程：** 檢查 Android Studio JBR 版本與本機 Gradle 快取，再改用已安裝的 JDK 17。
