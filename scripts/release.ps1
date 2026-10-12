@@ -1,8 +1,50 @@
 ﻿param(
-    [Parameter(Mandatory = $true)][string]$Version
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-NextVersion([string]$CurrentVersion) {
+    $parts = $CurrentVersion.Split('.')
+    $parts[-1] = ([bigint]$parts[-1] + 1).ToString()
+    $parts -join '.'
+}
+
+function Read-ReleaseVersion([string]$DefaultVersion) {
+    if ([Console]::IsInputRedirected) {
+        $answer = Read-Host "新版本（預設 $DefaultVersion）"
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $DefaultVersion }
+        return $answer.Trim()
+    }
+
+    # 在主控台預填數字，支援方向鍵、刪除與退格直接修改。
+    [Console]::Write('新版本：')
+    $left = [Console]::CursorLeft
+    $top = [Console]::CursorTop
+    $value = $DefaultVersion
+    $cursor = $value.Length
+    [Console]::Write($value)
+    while ($true) {
+        $key = [Console]::ReadKey($true)
+        $oldLength = $value.Length
+        switch ($key.Key) {
+            'Enter' { [Console]::WriteLine(); return $value }
+            'Escape' { throw '已取消發版。' }
+            'LeftArrow' { $cursor = [Math]::Max(0, $cursor - 1) }
+            'RightArrow' { $cursor = [Math]::Min($value.Length, $cursor + 1) }
+            'Home' { $cursor = 0 }
+            'End' { $cursor = $value.Length }
+            'Backspace' { if ($cursor -gt 0) { $value = $value.Remove($cursor - 1, 1); $cursor-- } }
+            'Delete' { if ($cursor -lt $value.Length) { $value = $value.Remove($cursor, 1) } }
+            default {
+                if ($key.KeyChar -match '[0-9.]') { $value = $value.Insert($cursor, [string]$key.KeyChar); $cursor++ }
+            }
+        }
+        [Console]::SetCursorPosition($left, $top)
+        [Console]::Write($value.PadRight($oldLength))
+        [Console]::SetCursorPosition($left + $cursor, $top)
+    }
+}
 
 function Get-ReleaseNotes {
     $previousEncoding = [Console]::OutputEncoding
@@ -23,6 +65,16 @@ function Get-ReleaseNotes {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
+
+$gradle = Join-Path $repoRoot "app\build.gradle.kts"
+$content = Get-Content $gradle -Raw -Encoding UTF8
+$currentMatch = [regex]::Match($content, 'versionName = "(\d+(?:\.\d+)*)"')
+if (-not $currentMatch.Success) { Write-Host '[ERROR] 找不到有效的目前版本。'; exit 1 }
+$currentVersion = $currentMatch.Groups[1].Value
+Write-Host "目前版本：$currentVersion"
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = Read-ReleaseVersion (Get-NextVersion $currentVersion)
+}
 
 if ($Version -notmatch '^\d+(\.\d+)*$') {
     Write-Host "[ERROR] Version must look like 1.1 or 1.2.3 (got: $Version)"
@@ -79,8 +131,6 @@ if (git tag -l "v$Version") {
 $releaseNotes = Get-ReleaseNotes
 
 # --- 1. Bump version in app/build.gradle.kts -----------------------
-$gradle = Join-Path $repoRoot "app\build.gradle.kts"
-$content = Get-Content $gradle -Raw -Encoding UTF8
 $m = [regex]::Match($content, 'versionCode = (\d+)')
 if (-not $m.Success) { Write-Host "[ERROR] versionCode not found in build.gradle.kts"; exit 1 }
 $newCode = [int]$m.Groups[1].Value + 1
