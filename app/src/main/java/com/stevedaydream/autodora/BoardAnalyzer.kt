@@ -26,13 +26,12 @@ class BoardAnalyzer {
     /** analyzeBoard 後可讀取，供 RecognitionOverlayWindow 使用 */
     val lastFeatures = Array(5) { Array(6) { CellFeatures() } }
 
-    private val matchBoard = Array(5) { BooleanArray(6) }
+    private val simulator = BoardSimulator(5, 6)
+    private val matchBoard get() = simulator.firstWaveMatch
     private val visited = Array(5) { BooleanArray(6) }
     private val queueR = IntArray(30)
     private val queueC = IntArray(30)
-    private val cascadeBoard = Array(5) { Array(6) { OrbType.UNKNOWN } }
-    private val firstWaveMatch = Array(5) { BooleanArray(6) }
-    private var firstWaveCombos = 0
+    private val firstWaveCombos get() = simulator.firstWaveCombos
 
     class SearchNode(maxSteps: Int) {
         val board = Array(5) { Array(6) { OrbType.UNKNOWN } }
@@ -432,12 +431,13 @@ class BoardAnalyzer {
         steps: Int = 35,
         beamWidth: Int = 200
     ): Pair<List<Pair<Float, Float>>, Int> {
-
+        if (!isCompleteBoard(board)) return Pair(emptyList(), 0)
         val maxSteps = steps.coerceIn(5, 60)
         val beam = beamWidth.coerceIn(30, 500)
 
         val nextNodes = Array(beam * 8) { SearchNode(maxSteps) }
         val currentNodes = Array(beam) { SearchNode(maxSteps) }
+        val selector = BeamSelector(beam) { nextNodes[it].score }
         val globalBestNode = SearchNode(maxSteps)
         globalBestNode.combos = 0; globalBestNode.score = Int.MIN_VALUE
 
@@ -490,7 +490,7 @@ class BoardAnalyzer {
                         nextNode.pathR[nextNode.pathLen] = nr; nextNode.pathC[nextNode.pathLen] = nc
                         nextNode.pathLen++
 
-                        // combo 含天降連鎖
+                        // 包含既有符石落下形成的連鎖，不預測隨機新珠
                         nextNode.combos = calculateCombosWithCascade(nextNode.board)
                         val baseScore = when(strategyMode) {
                             1 -> evaluateBottomUp(nextNode.board, nextNode.combos)
@@ -509,10 +509,8 @@ class BoardAnalyzer {
             }
             if (nextNodesCount == 0) break
             currentNodesCount = 0
-            for (k in 0 until beam.coerceAtMost(nextNodesCount)) {
-                var bestIdx = -1; var bestS = Int.MIN_VALUE
-                for (j in 0 until nextNodesCount) if (nextNodes[j].score > bestS) { bestS = nextNodes[j].score; bestIdx = j }
-                if (bestIdx != -1) { currentNodes[currentNodesCount++].copyFrom(nextNodes[bestIdx]); nextNodes[bestIdx].score = Int.MIN_VALUE }
+            for (index in selector.select(nextNodesCount)) {
+                currentNodes[currentNodesCount++].copyFrom(nextNodes[index])
             }
         }
 
@@ -541,7 +539,20 @@ class BoardAnalyzer {
         mlPlanner: MLOrbPlanner,
         steps: Int = 35,
         startMode: Int = 0
+    ): Pair<List<Pair<Float, Float>>, Int> = calculatePolicyPath(
+        board, orbSize, startX, startY, steps, startMode, mlPlanner::planPath
+    )
+
+    internal fun calculatePolicyPath(
+        board: Array<Array<OrbType>>,
+        orbSize: Float,
+        startX: Float,
+        startY: Float,
+        steps: Int,
+        startMode: Int,
+        planPath: (Array<Array<OrbType>>, Int, Int, Int) -> List<Pair<Int, Int>>
     ): Pair<List<Pair<Float, Float>>, Int> {
+        if (!isCompleteBoard(board)) return Pair(emptyList(), 0)
         val maxSteps = steps.coerceIn(5, 60)
 
         // Candidate starting positions based on startMode
@@ -557,7 +568,7 @@ class BoardAnalyzer {
         var bestCombos = 0
 
         for ((startRow, startCol) in candidates) {
-            val nodePath = mlPlanner.planPath(board, maxSteps, startRow, startCol)
+            val nodePath = planPath(board, maxSteps, startRow, startCol)
             if (nodePath.size <= 1) continue
 
             // Simulate the board state after following this path
@@ -572,7 +583,7 @@ class BoardAnalyzer {
                 simBoard[nr][nc] = temp
                 row = nr; col = nc
             }
-            val combos = calculateCombos(simBoard)
+            val combos = calculateCombosWithCascade(simBoard)
 
             if (combos > bestCombos) {
                 bestCombos = combos
@@ -591,89 +602,10 @@ class BoardAnalyzer {
         return Pair(bestPixelPath, bestCombos)
     }
 
-    /**
-     * 模擬完整天降連鎖：偵測 → 消除 → 落珠 → 再偵測，直到無新 combo，
-     * 回傳含天降的總 combo 數。
-     * 結束後 matchBoard 保持第一波的標記、firstWaveCombos 記錄第一波 combo 數，
-     * 供 evaluateBottomUp 等適應度函數使用。
-     */
-    private fun calculateCombosWithCascade(board: Array<Array<OrbType>>): Int {
-        var total = calculateCombos(board)
-        firstWaveCombos = total
-        if (total == 0) return 0
-        for (r in 0 until 5) for (c in 0 until 6) {
-            cascadeBoard[r][c] = board[r][c]
-            firstWaveMatch[r][c] = matchBoard[r][c]
-        }
-        while (true) {
-            // 消除本波標記的珠
-            for (r in 0 until 5) for (c in 0 until 6) if (matchBoard[r][c]) cascadeBoard[r][c] = OrbType.UNKNOWN
-            // 落珠：各行往下壓實
-            for (c in 0 until 6) {
-                var dest = 4
-                for (r in 4 downTo 0) {
-                    if (cascadeBoard[r][c] != OrbType.UNKNOWN) {
-                        if (dest != r) { cascadeBoard[dest][c] = cascadeBoard[r][c]; cascadeBoard[r][c] = OrbType.UNKNOWN }
-                        dest--
-                    }
-                }
-            }
-            val waveCombos = calculateCombos(cascadeBoard)
-            if (waveCombos == 0) break
-            total += waveCombos
-        }
-        // 還原第一波標記，讓後續適應度函數看到的是當前盤面的消除狀態
-        for (r in 0 until 5) for (c in 0 until 6) matchBoard[r][c] = firstWaveMatch[r][c]
-        return total
-    }
+    private fun isCompleteBoard(board: Array<Array<OrbType>>): Boolean =
+        board.size == 5 && board.all { row -> row.size == 6 && row.none { it == OrbType.UNKNOWN } }
 
-    private fun calculateCombos(board: Array<Array<OrbType>>): Int {
-        for (r in 0 until 5) for (c in 0 until 6) { matchBoard[r][c] = false; visited[r][c] = false }
-        for (r in 0 until 5) {
-            var c = 0
-            while (c < 4) {
-                val t = board[r][c]
-                if (t != OrbType.UNKNOWN && board[r][c+1] == t && board[r][c+2] == t) {
-                    matchBoard[r][c] = true; matchBoard[r][c+1] = true; matchBoard[r][c+2] = true
-                    var nextC = c + 3
-                    while (nextC < 6 && board[r][nextC] == t) { matchBoard[r][nextC] = true; nextC++ }
-                }
-                c++
-            }
-        }
-        for (c in 0 until 6) {
-            var r = 0
-            while (r < 3) {
-                val t = board[r][c]
-                if (t != OrbType.UNKNOWN && board[r+1][c] == t && board[r+2][c] == t) {
-                    matchBoard[r][c] = true; matchBoard[r+1][c] = true; matchBoard[r+2][c] = true
-                    var nextR = r + 3
-                    while (nextR < 5 && board[nextR][c] == t) { matchBoard[nextR][c] = true; nextR++ }
-                }
-                r++
-            }
-        }
-        var comboCount = 0
-        for (r in 0 until 5) {
-            for (c in 0 until 6) {
-                if (matchBoard[r][c] && !visited[r][c]) {
-                    comboCount++; var h = 0; var t = 0
-                    queueR[t] = r; queueC[t] = c; t++; visited[r][c] = true
-                    val type = board[r][c]
-                    while (h < t) {
-                        val currR = queueR[h]; val currC = queueC[h]; h++
-                        val dr = intArrayOf(-1, 1, 0, 0); val dc = intArrayOf(0, 0, -1, 1)
-                        for (d in 0..3) {
-                            val nr = currR + dr[d]; val nc = currC + dc[d]
-                            if (nr in 0 until 5 && nc in 0 until 6 && matchBoard[nr][nc] && !visited[nr][nc] && board[nr][nc] == type) {
-                                visited[nr][nc] = true; queueR[t] = nr; queueC[t] = nc; t++
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return comboCount
-    }
+    private fun calculateCombosWithCascade(board: Array<Array<OrbType>>): Int =
+        simulator.resolve(board)
 }
 // --- 修改結尾 ---
