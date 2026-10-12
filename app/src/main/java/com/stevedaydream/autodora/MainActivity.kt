@@ -209,6 +209,9 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Text("4. View Database")
                         }
+                        Button(onClick = { startActivity(Intent(this@MainActivity, RecognitionReviewActivity::class.java)) }) {
+                            Text("AI 辨識與待審樣本")
+                        }
                         Text(
                             text = "目前版本 v$currentVersion",
                             modifier = Modifier.padding(top = 16.dp)

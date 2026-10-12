@@ -130,7 +130,7 @@ class RecognitionDatabase(private val context: Context) {
             for (j in samples.indices) {
                 if (j == i) continue
                 val o = samples[j]
-                if (o.type != s.type || o.variant != s.variant) continue
+                if (o.type != s.type || o.variant != s.variant || o.status != s.status) continue
                 val d = euclidean(sv, vec(o.d290, o.d280, o.d300, o.w130, o.l50, o.wt210, o.h310, o.h320, o.f020, o.validPx))
                 if (d < nearestDist) nearestDist = d
             }

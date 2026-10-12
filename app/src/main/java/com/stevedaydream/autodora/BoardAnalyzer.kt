@@ -25,6 +25,7 @@ class BoardAnalyzer {
 
     /** analyzeBoard 後可讀取，供 RecognitionOverlayWindow 使用 */
     val lastFeatures = Array(5) { Array(6) { CellFeatures() } }
+    val lastAnnotations = Array(5) { Array(6) { OrbAnnotation(OrbType.UNKNOWN, uncertain = true) } }
 
     private val simulator = BoardSimulator(5, 6)
     private val matchBoard get() = simulator.firstWaveMatch
@@ -85,13 +86,22 @@ class BoardAnalyzer {
                                 scaled.recycle()
                             }
                         }
-                        board[row][col] = result
+                        val fullX = startX + col * orbSize
+                        val fullY = startY + row * orbSize
+                        val annotation = if (RecognitionLearningEngine.instance != null && fullX >= 0 && fullY >= 0 &&
+                            fullX + orbSize <= screenshot.width && fullY + orbSize <= screenshot.height) {
+                            val fullTile = Bitmap.createBitmap(screenshot, fullX, fullY, orbSize, orbSize)
+                            try { RecognitionLearningEngine.instance?.match(fullTile) } finally { fullTile.recycle() }
+                        } else null
+                        board[row][col] = annotation?.type ?: result
+                        lastAnnotations[row][col] = annotation ?: OrbAnnotation(result, uncertain = result == OrbType.UNKNOWN)
                     } finally {
                         crop.recycle()
                     }
                 }
             }
         }
+        RecognitionLearningEngine.instance?.offer(screenshot, startX, startY, orbSize, board)
         return board
     }
 

@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <application
+        android:usesCleartextTraffic="true"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -34,6 +35,7 @@
             android:name=".DatabaseViewerActivity"
             android:exported="false"
             android:label="樣本資料庫" />
+        <activity android:name=".RecognitionReviewActivity" android:exported="false" android:label="AI 辨識與待審資料庫" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

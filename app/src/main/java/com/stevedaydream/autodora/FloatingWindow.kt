@@ -81,6 +81,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
 
     fun show() {
         if (rootLayout != null) return
+        if (RecognitionLearningEngine.instance == null) RecognitionLearningEngine.instance = RecognitionLearningEngine(context.applicationContext)
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -579,6 +580,12 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         settingsContent.addView(rgStart)
 
         // ── 校正工具 ─────────────────────────────────────────────
+        settingsContent.addView(OverlayUi.pillButton(context, "AI 辨識設定與待審樣本").apply {
+            setOnClickListener {
+                isSettingsOpen = false; settingsPanel.visibility = View.GONE; refreshWindowLayout()
+                context.startActivity(android.content.Intent(context, RecognitionReviewActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        })
         settingsContent.addView(OverlayUi.sectionLabel(context, "校正工具"))
 
         // 📷 建立樣板（原 top bar btnCalibrate）
