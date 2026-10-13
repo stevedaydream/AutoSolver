@@ -298,7 +298,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             statusCard.visibility = if (isSettingsOpen) View.GONE else View.VISIBLE
             refreshWindowLayout()
         }
-        btnClose.setOnClickListener { hide() }
+        btnClose.setOnClickListener { accessibilityService.hideFloatingWindow() }
 
         menuLayout.apply {
             addView(btnPlay); addView(btnPreview); addView(btnAuto); addView(btnStop)
