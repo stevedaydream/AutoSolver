@@ -23,3 +23,5 @@ train/__pycache__/
 train/*.pt
 train/*.onnx
 train/*.npz
+
+.omc/
