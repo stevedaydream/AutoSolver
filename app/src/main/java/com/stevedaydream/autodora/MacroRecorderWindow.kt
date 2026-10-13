@@ -18,6 +18,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
@@ -26,6 +27,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlin.math.hypot
 
@@ -82,6 +84,20 @@ class MacroRecorderWindow(
     private var frameCapture: Deferred<MacroPreview?>? = null
     private var recordingJob: Job? = null
     private val capturedImages = mutableSetOf<String>()
+    // 重放中：穿透旗標尚未生效時，注入手勢會打回自己的視窗，需偵測後重送
+    private var replayPoint: Pair<Float, Float>? = null
+    private var replaySelfHit: CompletableDeferred<Unit>? = null
+
+    /** 重放期間吞掉所有觸控；若是自己注入的手勢（起點吻合）則標記需重送 */
+    private inner class ReplayGuardLayout : FrameLayout(context) {
+        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+            val p = replayPoint ?: return super.dispatchTouchEvent(ev)
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN &&
+                hypot((ev.rawX - p.first).toDouble(), (ev.rawY - p.second).toDouble()) < 4.0
+            ) replaySelfHit?.complete(Unit)
+            return true
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -140,7 +156,7 @@ class MacroRecorderWindow(
         val btnW = screenWidth / memberCount
         val memberAreaCenterY = ((startY - sbH) / 2).coerceAtLeast(0)
 
-        val overlayRoot = FrameLayout(context)
+        val overlayRoot = ReplayGuardLayout()
         memberOverlayView = overlayRoot
         memberBtns.clear(); actions.clear()
 
@@ -323,7 +339,7 @@ class MacroRecorderWindow(
         memberOverlayView = null; memberOverlayParams = null
         lastActionTime = System.currentTimeMillis()
 
-        val root = FrameLayout(context)
+        val root = ReplayGuardLayout()
         rootLayout = root
         val params = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
@@ -399,13 +415,13 @@ class MacroRecorderWindow(
                     val rl = rootLayout ?: return true
                     val rp = recordingParams ?: return true
                     replaying = true
+                    if (pendingGap > 300L) actions.add(MacroAction.Wait(pendingGap))
+                    actions.add(action)
+                    updateStatusText()
+                    val capture = frameCapture
                     recordingJob = scope.launch {
                       try {
-                        action.preview = frameCapture?.await()
-                        action.preview?.let { capturedImages.add(it.image) }
-                        if (pendingGap > 300L) actions.add(MacroAction.Wait(pendingGap))
-                        actions.add(action)
-                        updateStatusText()
+                        // 先重放給遊戲，不等截圖存檔
                         val replay = when (action) {
                         is MacroAction.Tap ->
                             dispatchTapNow(action.x, action.y, action.holdMs, rl, rp) {
@@ -422,6 +438,9 @@ class MacroRecorderWindow(
                         else -> null
                         }
                         replay?.join()
+                        replaying = false
+                        action.preview = capture?.await()
+                        action.preview?.let { capturedImages.add(it.image) }
                       } finally { replaying = false }
                     }
                 }
@@ -440,39 +459,50 @@ class MacroRecorderWindow(
         x: Float, y: Float, holdMs: Long,
         windowView: View?, params: WindowManager.LayoutParams?,
         onComplete: (() -> Unit)? = null
-    ): Job? {
-        if (windowView == null || params == null || !windowView.isAttachedToWindow) {
-            onComplete?.invoke(); return null
-        }
-        params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        windowManager.updateViewLayout(windowView, params)
-        return scope.launch {
-            try { accessibilityService.performTap(x, y, holdMs) }
-            finally {
-              withContext(NonCancellable) {
-                delay(32)
-                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-                if (windowView.isAttachedToWindow) windowManager.updateViewLayout(windowView, params)
-                onComplete?.invoke()
-              }
-            }
-        }
+    ): Job? = replayNow(Pair(x, y), windowView, params, onComplete) {
+        accessibilityService.performTap(x, y, holdMs)
     }
 
     private fun dispatchSwipeNow(
         path: List<Pair<Float, Float>>, durationMs: Long,
         windowView: View?, params: WindowManager.LayoutParams?,
         onComplete: (() -> Unit)? = null
+    ): Job? = replayNow(path.firstOrNull(), windowView, params, onComplete) {
+        accessibilityService.performOrbSwipe(path, durationMs)
+    }
+
+    /**
+     * updateViewLayout 設定的 FLAG_NOT_TOUCHABLE 是非同步生效；太早注入手勢會被自己的視窗吃掉，
+     * 遊戲收不到。等待數個影格後送出，若仍偵測到打回自己，延長等待並重送。
+     */
+    private fun replayNow(
+        start: Pair<Float, Float>?,
+        windowView: View?, params: WindowManager.LayoutParams?,
+        onComplete: (() -> Unit)?,
+        perform: suspend () -> Boolean
     ): Job? {
-        if (windowView == null || params == null || !windowView.isAttachedToWindow) {
+        if (start == null || windowView == null || params == null || !windowView.isAttachedToWindow) {
             onComplete?.invoke(); return null
         }
+        replayPoint = start
         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         windowManager.updateViewLayout(windowView, params)
         return scope.launch {
-            try { accessibilityService.performOrbSwipe(path, durationMs) }
-            finally {
+            try {
+                for (waitMs in longArrayOf(50L, 100L, 200L)) {
+                    delay(waitMs)
+                    val selfHit = CompletableDeferred<Unit>().also { replaySelfHit = it }
+                    val gesture = async { perform() }
+                    // 打回自己就不必等手勢跑完，下一次 dispatchGesture 會取消前一筆
+                    val hit = select {
+                        gesture.onAwait { false }
+                        selfHit.onAwait { true }
+                    }
+                    if (!hit) { delay(16); if (!selfHit.isCompleted) break }
+                }
+            } finally {
               withContext(NonCancellable) {
+                replayPoint = null; replaySelfHit = null
                 delay(32)
                 params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
                 if (windowView.isAttachedToWindow) windowManager.updateViewLayout(windowView, params)
