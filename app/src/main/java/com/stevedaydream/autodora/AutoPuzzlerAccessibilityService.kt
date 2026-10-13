@@ -12,13 +12,30 @@ import kotlin.coroutines.resume
 
 class AutoPuzzlerAccessibilityService : AccessibilityService() {
 
+    companion object {
+        var instance: AutoPuzzlerAccessibilityService? = null
+    }
+
     private var floatingWindow: FloatingWindow? = null
+    val isFloatingWindowShown get() = floatingWindow != null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.d("AutoPuzzler", "Accessibility Service Connected")
-        floatingWindow = FloatingWindow(this, this)
-        floatingWindow?.show()
+        instance = this
+        showFloatingWindow()
+    }
+
+    // FloatingWindow.hide() 會取消其協程範圍，重新開啟必須建立新實例
+    fun showFloatingWindow() {
+        if (floatingWindow == null) floatingWindow = FloatingWindow(this, this).also { it.show() }
+        FloatingWindowTileService.requestRefresh(this)
+    }
+
+    fun hideFloatingWindow() {
+        floatingWindow?.hide()
+        floatingWindow = null
+        FloatingWindowTileService.requestRefresh(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -29,13 +46,14 @@ class AutoPuzzlerAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        floatingWindow?.hide()
+        instance = null
+        hideFloatingWindow()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        floatingWindow?.hide()
-        floatingWindow = null
+        instance = null
+        hideFloatingWindow()
         super.onDestroy()
     }
 
