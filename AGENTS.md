@@ -2,10 +2,10 @@
 
 ## 技術棧
 - Kotlin、Android 原生懸浮視窗與 Compose 主畫面、AccessibilityService、MediaProjection、TensorFlow Lite。
-- compileSdk / targetSdk 36，minSdk 26；建置使用 JDK 17。
+- compileSdk / targetSdk 36，minSdk 26；建置使用 JDK 17 或 21（位元組碼目標為 Java 11）。
 
 ## 常用指令
-- PowerShell：`$env:JAVA_HOME='C:\Program Files\Java\jdk-17'`
+- PowerShell：`$env:JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'`
 - 建置與單元測試：`.\gradlew.bat testDebugUnitTest assembleDebug assembleDebugAndroidTest --console=plain`
 - Wrapper 首次需要下載 Gradle；本機已用快取 Gradle 8.14.3 驗證，見 project.md。
 
