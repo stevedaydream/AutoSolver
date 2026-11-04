@@ -91,20 +91,24 @@ if ($LASTEXITCODE -ne 0 -or $branch -ne 'main') {
 $jdkCandidates = @(
     $env:JAVA_HOME,
     'C:\Program Files\Java\jdk-17',
+    'C:\Program Files\Java\jdk-21',
+    (Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^jdk-(17|21)\.' } | Sort-Object Name -Descending |
+        Select-Object -ExpandProperty FullName),
     'C:\Program Files\Android\Android Studio\jbr'
 ) | Where-Object { $_ } | Select-Object -Unique
 $jdk = $jdkCandidates | Where-Object {
     $java = Join-Path $_ 'bin\java.exe'
     $release = Join-Path $_ 'release'
     (Test-Path $java) -and (Test-Path $release) -and
-        ((Get-Content $release -Raw) -match '(?m)^JAVA_VERSION="17(?:\.|\")')
+        ((Get-Content $release -Raw) -match '(?m)^JAVA_VERSION="(17|21)(?:\.|\")')
 } | Select-Object -First 1
 if (-not $jdk) {
-    Write-Host '[ERROR] 找不到 JDK 17，請將 JAVA_HOME 指向 JDK 17 後重試。'
+    Write-Host '[ERROR] 找不到 JDK 17 或 21（勿用 Java 25，見 BF-001），請設定 JAVA_HOME 後重試。'
     exit 1
 }
 $env:JAVA_HOME = $jdk
-Write-Host "使用 JDK 17：$jdk"
+Write-Host "使用 JDK：$jdk"
 
 # 檢查 GitHub 登入、工作目錄與版本標籤。
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {

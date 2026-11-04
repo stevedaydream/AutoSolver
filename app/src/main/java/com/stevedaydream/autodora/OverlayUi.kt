@@ -16,8 +16,8 @@ import android.widget.TextView
  * 單一薄荷綠 accent 表主要動作、紅表停止/刪除、琥珀表數值；其餘一律灰階。
  */
 object OverlayUi {
-    const val SURFACE      = "#F50D1117"  // 主底（深石墨，96% 不透明）
-    const val SURFACE_CARD = "#F5121A23"  // 面板/卡片底
+    const val SURFACE      = "#FF0D1117"  // 主底（深石墨，不透明，避免背景圖示透出干擾閱讀）
+    const val SURFACE_CARD = "#FF121A23"  // 面板/卡片底（不透明）
     const val CHIP         = "#14FFFFFF"  // 按鈕底（8% 白）
     const val CHIP_PRESSED = "#30FFFFFF"  // 按下態（19% 白）
     const val ACCENT_CHIP  = "#1F4ADE80"  // accent 按鈕底（12% 薄荷綠）

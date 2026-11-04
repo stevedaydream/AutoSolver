@@ -372,16 +372,33 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         val currentVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull() ?: "未知"
-        settingsContent.addView(OverlayUi.valueText(context, "目前版本 v$currentVersion", 200f))
-        settingsContent.addView(OverlayUi.pillButton(context, "檢查更新").apply {
-            setOnClickListener {
-                context.startActivity(android.content.Intent(context, MainActivity::class.java).apply {
-                    putExtra(MainActivity.EXTRA_CHECK_UPDATE, true)
-                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                        android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                })
-                toggleExpand()
-            }
+        // 與步進列同一格線：左側標籤、右側版本號與檢查按鈕
+        settingsContent.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(context).apply {
+                text = "目前版本"
+                setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+                textSize = 13f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(TextView(context).apply {
+                text = "v$currentVersion"
+                setTextColor(Color.parseColor(OverlayUi.VALUE))
+                textSize = 13f
+                typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+                setPadding(0, 0, OverlayUi.dp(context, 10f), 0)
+            })
+            addView(OverlayUi.pillButton(context, "檢查更新", textColor = OverlayUi.ACCENT).apply {
+                setOnClickListener {
+                    context.startActivity(android.content.Intent(context, MainActivity::class.java).apply {
+                        putExtra(MainActivity.EXTRA_CHECK_UPDATE, true)
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                            android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    })
+                    toggleExpand()
+                }
+            })
         })
 
         // ── 解算參數 ─────────────────────────────────────────────
@@ -776,6 +793,9 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 val metrics = windowManager.currentWindowMetrics
                 val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars())
                 params.height = metrics.bounds.height() - insets.top - insets.bottom
+                // 無障礙懸浮層不套用 fitInsets（BF-003），需手動下移到狀態列下方，
+                // 否則頂端壓住狀態列、底部留出等高空隙露出背景
+                params.y = insets.top
             }
             windowManager.updateViewLayout(rootLayout, params)
         } else {
