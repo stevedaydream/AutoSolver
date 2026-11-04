@@ -12,6 +12,9 @@ class MacroGestureView(context: Context) : View(context) {
     var onEdit: ((MacroAction) -> Unit)? = null
     var redrawPath = false
     var editable = true
+    /** 每個點擊各自對照的版面方塊與判讀結果（索引對應 points()） */
+    var guides: List<Pair<List<LayoutBox>, TeamLayout.TapHit>> = emptyList()
+        set(value) { field = value; invalidate() }
     private var action: MacroAction? = null
     private var bitmap: Bitmap? = null
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -85,6 +88,7 @@ class MacroGestureView(context: Context) : View(context) {
         val pts = if (dragIndex >= 0) draft else points()
         fun px(pt: Pair<Float, Float>) = bounds.left + pt.first * scale
         fun py(pt: Pair<Float, Float>) = bounds.top + pt.second * scale
+        drawGuides(canvas, scale, pts)
         paint.color = Color.parseColor(OverlayUi.ACCENT)
         paint.strokeWidth = 3 * resources.displayMetrics.density
         paint.style = Paint.Style.STROKE
@@ -113,6 +117,59 @@ class MacroGestureView(context: Context) : View(context) {
             val textX = (px(pt) + 8).coerceIn(0f, (width - paint.measureText(text)).coerceAtLeast(0f))
             val textY = (py(pt) + if (i > 0) paint.textSize + 12 else -12f).coerceIn(paint.textSize, height.toFloat())
             canvas.drawText(text, textX, textY, paint)
+        }
+        paint.alpha = 255
+    }
+
+    /**
+     * 畫出目前點擊對照的版面方塊：命中的方塊填色並以 accent 描邊，其餘以灰色虛線；
+     * 兩段技能在動畫前半顯示第一段版面、後半顯示第二段。底部列出各段判讀結果。
+     */
+    private fun drawGuides(canvas: Canvas, scale: Float, pts: List<Pair<Float, Float>>) {
+        if (guides.isEmpty()) return
+        val density = resources.displayMetrics.density
+        val active = if (guides.size > 1 && progress < .5f) 0 else guides.lastIndex
+        val (boxes, _) = guides[active]
+        val point = pts.getOrNull(active)
+        val hitBox = point?.let { TeamLayout.hit(boxes, it.first, it.second) }
+        val rect = RectF()
+        val dash = DashPathEffect(floatArrayOf(6 * density, 4 * density), 0f)
+        paint.textSize = 10 * resources.displayMetrics.scaledDensity
+        boxes.forEach { box ->
+            rect.set(bounds.left + box.left * scale, bounds.top + box.top * scale,
+                bounds.left + box.right * scale, bounds.top + box.bottom * scale)
+            val hit = box == hitBox
+            if (hit) {
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor(OverlayUi.ACCENT); paint.alpha = 60
+                canvas.drawRoundRect(rect, 4 * density, 4 * density, paint)
+            }
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = (if (hit) 2.5f else 1.2f) * density
+            paint.pathEffect = if (hit) null else dash
+            paint.color = if (hit) Color.parseColor(OverlayUi.ACCENT) else Color.argb(170, 200, 210, 220)
+            canvas.drawRoundRect(rect, 4 * density, 4 * density, paint)
+            paint.pathEffect = null
+            paint.style = Paint.Style.FILL
+            // 方塊太窄時只顯示編號（例如「成員 6」→「6」），避免相鄰標籤重疊
+            val label = if (paint.measureText(box.label) > rect.width() - 4 * density)
+                box.label.substringAfterLast(' ') else box.label
+            canvas.drawText(label, rect.left + 3 * density, rect.top + paint.textSize + 1 * density, paint)
+        }
+        // 底部判讀列：每段一行，命中為綠、未命中為紅
+        paint.textSize = 12 * resources.displayMetrics.scaledDensity
+        guides.forEachIndexed { i, (guideBoxes, original) ->
+            // 拖曳時依即時座標重新判讀
+            val hit = pts.getOrNull(i)?.let { original.copy(box = TeamLayout.hit(guideBoxes, it.first, it.second)) } ?: original
+            val ok = hit.box != null
+            val text = "${i + 1}. ${if (hit.screen == TeamLayout.Screen.MEMBERS) "成員列" else "技能頁"}：" +
+                "${TeamLayout.describe(hit)} ${if (ok) "✓" else "✗"}"
+            val y = bounds.bottom - (guides.size - 1 - i) * (paint.textSize + 6) - 8
+            paint.style = Paint.Style.FILL
+            paint.color = Color.argb(200, 8, 14, 20)
+            canvas.drawRect(bounds.left, y - paint.textSize - 2, bounds.left + paint.measureText(text) + 16, y + 6, paint)
+            paint.color = if (ok) Color.parseColor(OverlayUi.ACCENT) else Color.parseColor(OverlayUi.DANGER)
+            canvas.drawText(text, bounds.left + 8, y, paint)
         }
         paint.alpha = 255
     }

@@ -148,13 +148,15 @@ class MacroRecorderWindow(
     @SuppressLint("ClickableViewAccessibility")
     private fun showMemberOverlay() {
         val dp = context.resources.displayMetrics.density
-        val screenWidth = context.resources.displayMetrics.widthPixels
-        val sbH = getStatusBarHeight()
+        if (!prefs.contains("orbSize")) Toast.makeText(context,
+            "尚未校正盤面範圍，成員位置可能不準；請先在設定的校正工具調整辨識區域", Toast.LENGTH_LONG).show()
+        val startX = prefs.getInt("startX", 0)
         val startY = prefs.getInt("startY", 1000)
         val orbSize = prefs.getInt("orbSize", 150)
-        val btnH = orbSize.toFloat().coerceIn(80f * dp, 160f * dp).toInt()
-        val btnW = screenWidth / memberCount
-        val memberAreaCenterY = ((startY - sbH) / 2).coerceAtLeast(0)
+        // 成員按鈕直接蓋在遊戲成員列上（依盤面校正推算），點擊與重放都打在成員頭像中心
+        val memberBoxes = TeamLayout.members(startX.toFloat(), startY.toFloat(), orbSize.toFloat())
+        val dialogBoxes = TeamLayout.skillDialog(startX.toFloat(), startY.toFloat(), orbSize.toFloat())
+        val btnH = (memberBoxes.first().bottom - memberBoxes.first().top).toInt()
 
         val overlayRoot = ReplayGuardLayout()
         memberOverlayView = overlayRoot
@@ -179,6 +181,26 @@ class MacroRecorderWindow(
                 }
                 return true
             }
+
+            private val guidePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                super.onDraw(canvas)
+                // 技能確認頁版面預覽：以虛線框出技能卡與確定／取消，方便確認點選位置
+                val loc = IntArray(2); getLocationOnScreen(loc)
+                guidePaint.textSize = 12 * dp
+                dialogBoxes.forEach { box ->
+                    val l = box.left - loc[0]; val t = box.top - loc[1]
+                    val r = box.right - loc[0]; val b = box.bottom - loc[1]
+                    guidePaint.style = android.graphics.Paint.Style.STROKE
+                    guidePaint.strokeWidth = 2 * dp
+                    guidePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(8 * dp, 5 * dp), 0f)
+                    guidePaint.color = Color.parseColor("#CC4ADE80")
+                    canvas.drawRoundRect(l, t, r, b, 6 * dp, 6 * dp, guidePaint)
+                    guidePaint.pathEffect = null
+                    guidePaint.style = android.graphics.Paint.Style.FILL
+                    canvas.drawText(box.label, l + 6 * dp, t + guidePaint.textSize + 4 * dp, guidePaint)
+                }
+            }
         }.apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
@@ -199,24 +221,26 @@ class MacroRecorderWindow(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 this.gravity = Gravity.TOP
-                topMargin = (memberAreaCenterY - btnH).coerceAtLeast(0)
+                topMargin = (dialogBoxes.last().bottom + 12 * dp).toInt()
             }
         }
         stage2HintBar = hintBar
 
         // ── 成員按鈕 ─────────────────────────────────────────────────────────
-        for (slot in 0 until memberCount) {
-            val tapX = slot * btnW + btnW / 2f
-            val tapY = sbH + memberAreaCenterY.toFloat()
+        for (slot in 0 until memberCount.coerceAtMost(TeamLayout.SLOTS)) {
+            val box = memberBoxes[slot]
+            val tapX = box.centerX
+            val tapY = box.centerY
             val btn = Button(context).apply {
                 text = "成員\n${slot + 1}"; setTextColor(Color.WHITE)
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor("#882980B9")); cornerRadius = 12f
                     setStroke((2 * dp).toInt(), Color.parseColor("#FF5DADE2"))
                 }
-                layoutParams = FrameLayout.LayoutParams(btnW - (8 * dp).toInt(), btnH).apply {
-                    leftMargin = slot * btnW + (4 * dp).toInt()
-                    topMargin = memberAreaCenterY - btnH / 2
+                setPadding(0, 0, 0, 0); textSize = 11f
+                layoutParams = FrameLayout.LayoutParams((box.right - box.left).toInt(), btnH).apply {
+                    leftMargin = box.left.toInt()
+                    topMargin = box.top.toInt()
                 }
                 setOnClickListener { showSkillDialog(slot, tapX, tapY) }
             }
@@ -256,6 +280,16 @@ class MacroRecorderWindow(
         )
         memberOverlayParams = params
         windowManager.addView(overlayRoot, params)
+        // 先以螢幕座標排版，加入視窗後再扣掉覆蓋層實際的螢幕位移（各機型狀態列處理不同）
+        overlayRoot.post {
+            val loc = IntArray(2); overlayRoot.getLocationOnScreen(loc)
+            if (loc[1] != 0) {
+                (memberBtns + hintBar).forEach { v ->
+                    (v.layoutParams as FrameLayout.LayoutParams).topMargin -= loc[1]
+                    v.requestLayout()
+                }
+            }
+        }
     }
 
     // ── 技能選擇對話框 ────────────────────────────────────────────────────────
