@@ -39,6 +39,15 @@ class MacroEditorWindow(
     private var dragFrom = -1
     private var closed = false
     private var playbackVersion = 0
+    private lateinit var nameField: EditText
+    private var multiSelect = false
+    private val checked = sortedSetOf<Int>()
+    private lateinit var multiButton: TextView
+    private lateinit var selectAllButton: TextView
+    private lateinit var copyButton: TextView
+    private lateinit var deleteCheckedButton: TextView
+    private lateinit var pasteButton: TextView
+    private lateinit var multiBar: LinearLayout
 
     fun show() {
         root = LinearLayout(context).apply {
@@ -47,11 +56,20 @@ class MacroEditorWindow(
             background = OverlayUi.rounded(context, OverlayUi.SURFACE, 18f)
         }
         val header = bar(root)
-        header.addView(label("編輯：${macro.name}", 16f), LinearLayout.LayoutParams(0, -2, 1f))
+        nameField = EditText(context).apply {
+            setText(macro.name); setSingleLine(); textSize = 15f
+            setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+            hint = "巨集名稱"; setHintTextColor(Color.parseColor(OverlayUi.TEXT_LO))
+            background = OverlayUi.rounded(context, OverlayUi.CHIP, 12f)
+            setPadding(px(10), px(7), px(10), px(7))
+        }
+        header.addView(nameField, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = px(6) })
         button(header, "取消") { close() }
         button(header, "儲存") {
+            val name = nameField.text.toString().trim()
+            if (name.isBlank()) { nameField.error = "請輸入名稱"; return@button }
             try {
-                MacroStorage.save(context, macro.copy(actions = actions.toList()))
+                MacroStorage.save(context, macro.copy(name = name, actions = actions.toList()))
                 MacroImages.discard(context, macro.actions.mapNotNull { it.preview?.image })
                 close()
             } catch (e: Exception) { message("儲存失敗：${e.message}") }
@@ -59,9 +77,36 @@ class MacroEditorWindow(
         val tools = scrollingBar(root)
         undoButton = button(tools, "復原") { restore(undo, redo) }
         redoButton = button(tools, "重做") { restore(redo, undo) }
+        multiButton = button(tools, "多選") {
+            stopPlayback(); multiSelect = !multiSelect; checked.clear(); refresh()
+        }
+        pasteButton = button(tools, "貼上") {
+            val items = MacroClipboard.paste()
+            if (items.isEmpty()) return@button
+            change {
+                val at = ClipboardOrder.insertAt(actions.size, selected)
+                actions.addAll(at, items); selected = at
+            }
+            message("已貼上 ${items.size} 個步驟")
+        }
         button(tools, "＋點擊") { add(MacroAction.Tap(metrics.widthPixels / 2f, metrics.heightPixels / 2f)) }
         button(tools, "＋滑動") { add(MacroAction.Swipe(listOf(metrics.widthPixels * .3f to metrics.heightPixels * .5f, metrics.widthPixels * .7f to metrics.heightPixels * .5f), 500)) }
         button(tools, "＋等待") { add(MacroAction.Wait(1000)) }
+        // 多選模式專用列：全選／複製／刪除，只在多選時顯示
+        multiBar = scrollingBar(root)
+        selectAllButton = button(multiBar, "全選") {
+            if (checked.size == actions.size) checked.clear() else checked.addAll(actions.indices)
+            refresh()
+        }
+        copyButton = button(multiBar, "複製") {
+            MacroClipboard.copy(actions, checked)
+            message("已複製 ${MacroClipboard.size} 個步驟，可到其他巨集貼上")
+            multiSelect = false; checked.clear(); refresh()
+        }
+        deleteCheckedButton = button(multiBar, "刪除") {
+            val drop = checked.toSet()
+            change { actions = ClipboardOrder.removeAll(actions, drop).toMutableList() }
+        }
         status = label("", 12f)
         root.addView(status)
         preview = MacroGestureView(context).apply { onEdit = { replacement -> change { actions[selected] = replacement } } }
@@ -78,11 +123,11 @@ class MacroEditorWindow(
         list = ScrollView(context)
         rows = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         list.addView(rows)
-        root.addView(list, LinearLayout.LayoutParams(-1, 0, 2.7f))
+        root.addView(list, LinearLayout.LayoutParams(-1, 0, 3.6f))
         val settingsScroll = ScrollView(context)
         settings = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         settingsScroll.addView(settings)
-        root.addView(settingsScroll, LinearLayout.LayoutParams(-1, 0, 2.5f))
+        root.addView(settingsScroll, LinearLayout.LayoutParams(-1, -2))
         val params = WindowManager.LayoutParams(
             (metrics.widthPixels * .96f).toInt(), (metrics.heightPixels * .92f).toInt(),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -117,13 +162,14 @@ class MacroEditorWindow(
     private fun message(text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
     private fun snapshot() = State(actions.toList(), selected)
     private fun change(block: () -> Unit) {
-        stopPlayback(); undo.addLast(snapshot()); redo.clear(); block()
+        stopPlayback(); undo.addLast(snapshot()); redo.clear(); block(); checked.clear()
         selected = selected.coerceIn(0, actions.lastIndex.coerceAtLeast(0)); refresh()
     }
     private fun restore(from: ArrayDeque<State>, to: ArrayDeque<State>) {
         if (from.isEmpty()) return
         stopPlayback(); to.addLast(snapshot())
         val state = from.removeLast(); actions = state.actions.toMutableList(); selected = state.selected
+        checked.clear()
         refresh()
     }
     private fun add(action: MacroAction) {
@@ -149,10 +195,20 @@ class MacroEditorWindow(
         undoButton.isEnabled = undo.isNotEmpty(); redoButton.isEnabled = redo.isNotEmpty()
         undoButton.alpha = if (undoButton.isEnabled) 1f else .35f
         redoButton.alpha = if (redoButton.isEnabled) 1f else .35f
+        multiButton.text = if (multiSelect) "結束多選" else "多選"
+        (multiBar.parent as View).visibility = if (multiSelect) View.VISIBLE else View.GONE
+        selectAllButton.text = if (actions.isNotEmpty() && checked.size == actions.size) "取消全選" else "全選"
+        copyButton.text = "複製（${checked.size}）"
+        deleteCheckedButton.text = "刪除（${checked.size}）"
+        listOf(copyButton, deleteCheckedButton).forEach { it.isEnabled = checked.isNotEmpty(); it.alpha = if (it.isEnabled) 1f else .35f }
+        pasteButton.visibility = if (MacroClipboard.isEmpty()) View.GONE else View.VISIBLE
+        pasteButton.text = "貼上（${MacroClipboard.size}）"
         actions.forEachIndexed { index, action ->
             val row = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                background = OverlayUi.rounded(context, if (index == selected) OverlayUi.ACCENT_CHIP else OverlayUi.CHIP, 8f)
+                // 多選時只高亮已勾選的步驟，避免與「目前步驟」混淆
+                val highlight = if (multiSelect) index in checked else index == selected
+                background = OverlayUi.rounded(context, if (highlight) OverlayUi.ACCENT_CHIP else OverlayUi.CHIP, 8f)
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(3) }
             }
             val handle = label("☰", 18f)
@@ -181,12 +237,20 @@ class MacroEditorWindow(
                     true
                 }
             }
-            row.addView(label("${index + 1}. ${description(action)}").apply {
+            val mark = if (!multiSelect) "" else if (index in checked) "☑ " else "☐ "
+            row.addView(label("$mark${index + 1}. ${description(action)}").apply {
                 layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-                setOnClickListener { stopPlayback(); selected = index; refresh(); preview.animate(duration(action)) }
+                setOnClickListener {
+                    if (multiSelect) {
+                        if (!checked.remove(index)) checked.add(index)
+                        selected = index; refresh()
+                    } else { stopPlayback(); selected = index; refresh(); preview.animate(duration(action)) }
+                }
             })
-            button(row, "複製") { change { actions.add(index + 1, MacroAction.fromJson(action.toJson())); selected = index + 1 } }
-            button(row, "刪除") { change { actions.removeAt(index) } }
+            if (!multiSelect) {
+                button(row, "複製") { change { actions.add(index + 1, MacroAction.fromJson(action.toJson())); selected = index + 1 } }
+                button(row, "刪除") { change { actions.removeAt(index) } }
+            }
             rows.addView(row)
         }
         settings.removeAllViews()
@@ -197,6 +261,11 @@ class MacroEditorWindow(
         preview.display(action, metrics.widthPixels, metrics.heightPixels,
             if (action is MacroAction.Wait) nearbyFrame(selected) else action.preview)
         preview.redrawPath = false
+        if (multiSelect) {
+            // 多選時隱藏設定區，避免高度變動使列表位移
+            status.text = "多選：已勾選 ${checked.size} 個步驟，點選步驟可勾選／取消"
+            return
+        }
         val options = scrollingBar(settings)
         if (action !is MacroAction.Wait) button(options, "補上目前截圖") { capture() }
         if (action is MacroAction.Swipe || action is MacroAction.FixedBoard) {

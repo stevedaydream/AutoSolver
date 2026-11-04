@@ -28,6 +28,12 @@ class MacroListWindow(
     private var rootLayout: LinearLayout? = null
     private var listContainer: LinearLayout? = null
     private var editor: MacroEditorWindow? = null
+    private var comboEditor: ComboEditorWindow? = null
+    /** 0 = 巨集分頁，1 = 組合分頁 */
+    private var tab = 0
+    private var tabMacro: TextView? = null
+    private var tabCombo: TextView? = null
+    private var addButton: TextView? = null
     private var isPlaying = false
     @Volatile private var stopRequested = false
     private var stopBar: LinearLayout? = null
@@ -62,6 +68,19 @@ class MacroListWindow(
         ).apply { setOnClickListener { hide() } })
         rootLayout!!.addView(titleBar)
 
+        // 分頁：巨集｜組合
+        val tabRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, (8 * dp).toInt())
+        }
+        tabMacro = OverlayUi.pillButton(context, "巨集").apply { setOnClickListener { tab = 0; refresh() } }
+        tabCombo = OverlayUi.pillButton(context, "組合").apply { setOnClickListener { tab = 1; refresh() } }
+        tabRow.addView(tabMacro, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            .apply { marginEnd = (3 * dp).toInt() })
+        tabRow.addView(tabCombo, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            .apply { marginStart = (3 * dp).toInt() })
+        rootLayout!!.addView(tabRow)
+
         // Scrollable macro list
         val scrollView = ScrollView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -74,7 +93,7 @@ class MacroListWindow(
         rootLayout!!.addView(scrollView)
 
         // New recording button（accent 實心 pill）
-        rootLayout!!.addView(TextView(context).apply {
+        addButton = TextView(context).apply {
             text = "＋ 新增錄製"
             setTextColor(Color.parseColor("#0D1117"))
             textSize = 14f
@@ -91,13 +110,18 @@ class MacroListWindow(
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = (10 * dp).toInt() }
             setOnClickListener {
-                hide()
-                MacroRecorderWindow(context, accessibilityService, scope, prefs).show()
+                if (tab == 0) {
+                    hide()
+                    MacroRecorderWindow(context, accessibilityService, scope, prefs).show()
+                } else openComboEditor(null)
             }
-        })
+        }
+        rootLayout!!.addView(addButton)
 
+        // 固定寬度：切換分頁或名稱長短時視窗不跳動
+        val screenW = context.resources.displayMetrics.widthPixels
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            minOf((screenW * 0.92f).toInt(), (400 * dp).toInt()),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -111,6 +135,15 @@ class MacroListWindow(
     private fun refresh() {
         val container = listContainer ?: return
         container.removeAllViews()
+        listOf(tabMacro to 0, tabCombo to 1).forEach { (view, index) ->
+            view ?: return@forEach
+            val active = tab == index
+            view.background = OverlayUi.chipRounded(context, 20f, if (active) OverlayUi.ACCENT_CHIP else OverlayUi.CHIP)
+            view.setTextColor(Color.parseColor(if (active) OverlayUi.ACCENT else OverlayUi.TEXT_LO))
+            view.setTypeface(null, if (active) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+        }
+        addButton?.text = if (tab == 0) "＋ 新增錄製" else "＋ 新增組合"
+        if (tab == 1) { refreshCombos(container); return }
         val macros = MacroStorage.listAll(context)
         val dp = context.resources.displayMetrics.density
 
@@ -159,30 +192,7 @@ class MacroListWindow(
             // 重複次數步進器：1–99 次，1 再減為 ∞（0 = 無限），∞ 再加回 1
             var repeatCount = 1
             val repeatVal = OverlayUi.valueText(context, "×1", widthDp = 38f)
-            val updateRepeatLabel = {
-                repeatVal.text = if (repeatCount == 0) "∞" else "×$repeatCount"
-            }
-            row.addView(OverlayUi.iconButton(
-                context, "−", OverlayUi.TEXT_HI, sizeDp = 28f, textSizeSp = 14f
-            ).apply { setOnClickListener {
-                repeatCount = when {
-                    repeatCount == 0 -> 99
-                    repeatCount <= 1 -> 0
-                    else -> repeatCount - 1
-                }
-                updateRepeatLabel()
-            } })
-            row.addView(repeatVal)
-            row.addView(OverlayUi.iconButton(
-                context, "＋", OverlayUi.TEXT_HI, sizeDp = 28f, textSizeSp = 14f
-            ).apply { setOnClickListener {
-                repeatCount = when {
-                    repeatCount == 0 -> 1
-                    repeatCount >= 99 -> 0
-                    else -> repeatCount + 1
-                }
-                updateRepeatLabel()
-            } })
+            addRepeatStepper(row, repeatVal) { repeatCount = it(repeatCount); repeatCount }
 
             // Play button
             row.addView(OverlayUi.iconButton(
@@ -207,7 +217,9 @@ class MacroListWindow(
             ).apply {
                 (layoutParams as LinearLayout.LayoutParams).marginStart = (4 * dp).toInt()
                 setOnClickListener {
+                    val used = ComboPlan.usageCount(ComboStorage.listAll(context), macro.id)
                     MacroStorage.delete(context, macro.id)
+                    if (used > 0) Toast.makeText(context, "已刪除；有 $used 個組合使用此巨集，請重新編輯", Toast.LENGTH_LONG).show()
                     refresh()
                 }
             })
@@ -227,7 +239,7 @@ class MacroListWindow(
         }
         isPlaying = true; stopRequested = false
         hide()
-        showStopBar(macro.name)
+        showStopBar("🔁 ${macro.name}")
 
         scope.launch {
             try {
@@ -236,7 +248,7 @@ class MacroListWindow(
                     round++
                     val roundText = if (repeat == 0) "第${round}輪" else "$round/$repeat"
                     stopBarLabel?.text = "🔁 ${macro.name} $roundText\n準備中..."
-                    val ok = runMacroActions(macro, round, repeat)
+                    val ok = runMacroActions(macro) { progress -> "🔁 ${macro.name} $roundText\n$progress" }
                     if (!ok || stopRequested) break
                     if (repeat != 0 && round >= repeat) break
                 }
@@ -247,8 +259,143 @@ class MacroListWindow(
         }
     }
 
+    /** −/數值/＋ 步進器；update 收到步進函式並回傳新值 */
+    private fun addRepeatStepper(row: LinearLayout, valueView: TextView, update: ((Int) -> Int) -> Int) {
+        row.addView(OverlayUi.iconButton(
+            context, "−", OverlayUi.TEXT_HI, sizeDp = 28f, textSizeSp = 14f
+        ).apply { setOnClickListener { valueView.text = RepeatCount.label(update(RepeatCount::dec)) } })
+        row.addView(valueView)
+        row.addView(OverlayUi.iconButton(
+            context, "＋", OverlayUi.TEXT_HI, sizeDp = 28f, textSizeSp = 14f
+        ).apply { setOnClickListener { valueView.text = RepeatCount.label(update(RepeatCount::inc)) } })
+    }
+
+    private fun refreshCombos(container: LinearLayout) {
+        val dp = context.resources.displayMetrics.density
+        val combos = ComboStorage.listAll(context)
+        val macroIds = MacroStorage.listAll(context).map { it.id }.toSet()
+        if (combos.isEmpty()) {
+            container.addView(TextView(context).apply {
+                text = "尚無組合\n可將多個巨集依序串接執行"
+                setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(0, (20 * dp).toInt(), 0, (20 * dp).toInt())
+            })
+            return
+        }
+        combos.forEach { combo ->
+            val missing = ComboPlan.missingSteps(combo.steps, macroIds).size
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = OverlayUi.rounded(context, OverlayUi.CHIP, 14f)
+                setPadding((12 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = (6 * dp).toInt() }
+            }
+            row.addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = combo.name
+                    setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+                    textSize = 14f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                addView(TextView(context).apply {
+                    text = if (missing > 0) "⚠ 缺少 $missing 個巨集"
+                           else "${combo.steps.size} 步 · 每輪 ${ComboPlan.runsPerRound(combo.steps)} 次"
+                    setTextColor(Color.parseColor(if (missing > 0) OverlayUi.DANGER else OverlayUi.TEXT_LO))
+                    textSize = 11f
+                })
+            })
+
+            var repeatCount = 1
+            addRepeatStepper(row, OverlayUi.valueText(context, "×1", widthDp = 38f)) {
+                repeatCount = it(repeatCount); repeatCount
+            }
+            row.addView(OverlayUi.iconButton(
+                context, "▶", OverlayUi.ACCENT, sizeDp = 36f, textSizeSp = 14f,
+                chipColor = OverlayUi.ACCENT_CHIP
+            ).apply {
+                (layoutParams as LinearLayout.LayoutParams).marginStart = (6 * dp).toInt()
+                alpha = if (missing > 0) .4f else 1f
+                setOnClickListener { playCombo(combo, repeatCount) }
+            })
+            row.addView(OverlayUi.iconButton(
+                context, "✏", OverlayUi.TEXT_HI, sizeDp = 32f, textSizeSp = 13f
+            ).apply {
+                (layoutParams as LinearLayout.LayoutParams).marginStart = (4 * dp).toInt()
+                setOnClickListener { openComboEditor(combo) }
+            })
+            row.addView(OverlayUi.iconButton(
+                context, "🗑", OverlayUi.DANGER, sizeDp = 32f, textSizeSp = 13f
+            ).apply {
+                (layoutParams as LinearLayout.LayoutParams).marginStart = (4 * dp).toInt()
+                setOnClickListener { ComboStorage.delete(context, combo.id); refresh() }
+            })
+            container.addView(row)
+        }
+    }
+
+    private fun openComboEditor(combo: MacroCombo?) {
+        hide()
+        comboEditor = ComboEditorWindow(context, combo) { comboEditor = null; tab = 1; show() }.also { it.show() }
+    }
+
+    /** 依序執行組合中的巨集；任一巨集缺失、失敗或被停止即中止整個組合 */
+    private fun playCombo(combo: MacroCombo, repeat: Int) {
+        if (isPlaying) {
+            Toast.makeText(context, "播放中，請稍後", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val macros = combo.steps.map { MacroStorage.load(context, it.macroId) }
+        if (macros.isEmpty() || macros.any { it == null }) {
+            Toast.makeText(context, "組合內有巨集已被刪除，請先編輯組合", Toast.LENGTH_SHORT).show()
+            return
+        }
+        isPlaying = true; stopRequested = false
+        hide()
+        showStopBar("🔗 ${combo.name}")
+
+        scope.launch {
+            try {
+                var round = 0
+                outer@ while (!stopRequested) {
+                    round++
+                    val roundText = if (repeat == 0) "第${round}輪" else "$round/$repeat"
+                    for ((index, step) in combo.steps.withIndex()) {
+                        val macro = macros[index]!!
+                        for (time in 1..step.repeat) {
+                            if (stopRequested) break@outer
+                            val stepText = "${index + 1}/${combo.steps.size} ${macro.name}" +
+                                if (step.repeat > 1) " ($time/${step.repeat})" else ""
+                            val ok = runMacroActions(macro) { progress ->
+                                "🔗 $roundText · $stepText\n$progress"
+                            }
+                            if (!ok) {
+                                if (!stopRequested) withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "「${macro.name}」執行失敗，組合已停止", Toast.LENGTH_LONG).show()
+                                }
+                                break@outer
+                            }
+                        }
+                    }
+                    if (repeat != 0 && round >= repeat) break
+                }
+            } finally {
+                isPlaying = false
+                hideStopBar()
+            }
+        }
+    }
+
     /** 執行一輪巨集動作；回傳 false 表示發生錯誤或被停止，應中止循環 */
-    private suspend fun runMacroActions(macro: Macro, round: Int, repeat: Int): Boolean {
+    private suspend fun runMacroActions(macro: Macro, status: (String) -> String): Boolean {
         val sX = prefs.getInt("startX", 0)
         val sY = prefs.getInt("startY", 1000)
         val oS = prefs.getInt("orbSize", 150)
@@ -260,7 +407,6 @@ class MacroListWindow(
         for ((index, action) in macro.actions.withIndex()) {
             if (stopRequested) return false
 
-            val roundStr = if (repeat == 0) "第${round}輪" else "$round/$repeat"
             val progressStr = "${index + 1}/${macro.actions.size}"
             val actionDesc = when (action) {
                 is MacroAction.Tap -> "點擊"
@@ -271,7 +417,7 @@ class MacroListWindow(
                 is MacroAction.FixedBoard -> "固定盤"
             }
             withContext(Dispatchers.Main) {
-                stopBarLabel?.text = "🔁 ${macro.name} $roundStr\n進度: $progressStr $actionDesc"
+                stopBarLabel?.text = status("進度: $progressStr $actionDesc")
             }
 
             when (action) {
@@ -390,7 +536,7 @@ class MacroListWindow(
         waitForStableBoard(sX, sY, oS, timeoutMs = 8000L)
     }
 
-    private fun showStopBar(name: String) {
+    private fun showStopBar(title: String) {
         if (stopBar != null) return
         val dp = context.resources.displayMetrics.density
         val bar = LinearLayout(context).apply {
@@ -400,7 +546,7 @@ class MacroListWindow(
             setPadding((14 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
         }
         stopBarLabel = TextView(context).apply {
-            text = "🔁 $name\n準備中..."
+            text = "$title\n準備中..."
             setTextColor(Color.parseColor(OverlayUi.TEXT_HI)); textSize = 13f
             setPadding(0, 0, (10 * dp).toInt(), 0)
             minLines = 2
@@ -443,6 +589,8 @@ class MacroListWindow(
     fun hide() {
         editor?.dismiss()
         editor = null
+        comboEditor?.dismiss()
+        comboEditor = null
         rootLayout?.let { if (it.isAttachedToWindow) windowManager.removeView(it) }
         rootLayout = null
         listContainer = null

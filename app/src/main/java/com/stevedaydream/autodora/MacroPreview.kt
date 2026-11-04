@@ -36,7 +36,7 @@ object MacroImages {
     }
 
     fun discard(context: Context, names: Collection<String>) {
-        val used = MacroStorage.listAll(context).flatMap { it.actions }.mapNotNull { it.preview?.image }.toSet()
+        val used = MacroStorage.listAll(context).flatMap { it.actions }.mapNotNull { it.preview?.image }.toSet() + MacroClipboard.images()
         names.filterNot { it in used }.forEach { file(context, it)?.delete() }
     }
 }

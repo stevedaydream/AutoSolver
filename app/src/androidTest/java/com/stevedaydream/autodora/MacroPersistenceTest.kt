@@ -44,6 +44,32 @@ class MacroPersistenceTest {
         } finally { MacroStorage.delete(context, id) }
     }
 
+    @Test fun comboRoundTripsAndToleratesBadRepeat() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val combo = MacroCombo(MacroStorage.newId(), "組合測試", listOf(ComboStep("a", 3), ComboStep("b")), 7)
+        try {
+            ComboStorage.save(context, combo)
+            assertEquals(combo, ComboStorage.load(context, combo.id))
+            assertTrue(ComboStorage.listAll(context).any { it.id == combo.id })
+            val odd = ComboStorage.fromJson(org.json.JSONObject(
+                "{\"id\":\"x\",\"name\":\"n\",\"steps\":[{\"macroId\":\"a\",\"repeat\":0},{\"repeat\":2}]}"))
+            assertEquals(listOf(ComboStep("a", 1)), odd.steps)
+        } finally { ComboStorage.delete(context, combo.id) }
+        assertNull(ComboStorage.load(context, combo.id))
+    }
+
+    @Test fun clipboardCopiesDeeplyAndProtectsImages() {
+        val tap = MacroAction.Tap(1f, 2f).apply { preview = MacroPreview("abc.jpg", 10, 20) }
+        val actions = listOf(MacroAction.Wait(5), tap, MacroAction.Wait(9))
+        try {
+            MacroClipboard.copy(actions, listOf(2, 1))
+            val pasted = MacroClipboard.paste()
+            assertEquals(listOf(tap, MacroAction.Wait(9)), pasted)
+            assertNotSame(tap, pasted[0])
+            assertEquals(setOf("abc.jpg"), MacroClipboard.images())
+        } finally { MacroClipboard.clear() }
+    }
+
     @Test fun unsafeImagePathsAreRejected() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         assertNull(MacroImages.file(context, "../secret.jpg"))
