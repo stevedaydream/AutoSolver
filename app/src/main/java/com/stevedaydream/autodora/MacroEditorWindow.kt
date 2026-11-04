@@ -20,6 +20,18 @@ class MacroEditorWindow(
     private val metrics = android.util.DisplayMetrics().also { @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it) }
     private var actions = macro.actions.toMutableList()
     private var selected = 0
+    private val prefs = context.getSharedPreferences("AutoDoraPrefs", Context.MODE_PRIVATE)
+    /** 版面方塊依盤面校正推算（與實際解盤使用同一組參數） */
+    private val boardX get() = prefs.getInt("startX", 0).toFloat()
+    private val boardY get() = prefs.getInt("startY", 1000).toFloat()
+    private val orbSize get() = prefs.getInt("orbSize", 150).toFloat()
+    private var hits: List<List<TeamLayout.TapHit>> = emptyList()
+    private fun boxesFor(screen: TeamLayout.Screen) =
+        if (screen == TeamLayout.Screen.MEMBERS) TeamLayout.members(boardX, boardY, orbSize)
+        else TeamLayout.skillDialog(boardX, boardY, orbSize)
+    /** 步驟列表附註：點擊落在哪個方塊 */
+    private fun hitSuffix(index: Int): String = hits.getOrNull(index).orEmpty()
+        .joinToString("") { "　→ ${TeamLayout.describe(it)}${if (it.box != null) "" else " ✗"}" }
     private data class State(val actions: List<MacroAction>, val selected: Int)
     private val undo = ArrayDeque<State>()
     private val redo = ArrayDeque<State>()
@@ -192,6 +204,7 @@ class MacroEditorWindow(
 
     private fun refresh() {
         rows.removeAllViews()
+        hits = TeamLayout.classify(actions, boardX, boardY, orbSize)
         undoButton.isEnabled = undo.isNotEmpty(); redoButton.isEnabled = redo.isNotEmpty()
         undoButton.alpha = if (undoButton.isEnabled) 1f else .35f
         redoButton.alpha = if (redoButton.isEnabled) 1f else .35f
@@ -238,7 +251,7 @@ class MacroEditorWindow(
                 }
             }
             val mark = if (!multiSelect) "" else if (index in checked) "☑ " else "☐ "
-            row.addView(label("$mark${index + 1}. ${description(action)}").apply {
+            row.addView(label("$mark${index + 1}. ${description(action)}${hitSuffix(index)}").apply {
                 layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
                 setOnClickListener {
                     if (multiSelect) {
@@ -261,6 +274,7 @@ class MacroEditorWindow(
         preview.display(action, metrics.widthPixels, metrics.heightPixels,
             if (action is MacroAction.Wait) nearbyFrame(selected) else action.preview)
         preview.redrawPath = false
+        preview.guides = hits.getOrNull(selected).orEmpty().map { boxesFor(it.screen) to it }
         if (multiSelect) {
             // 多選時隱藏設定區，避免高度變動使列表位移
             status.text = "多選：已勾選 ${checked.size} 個步驟，點選步驟可勾選／取消"
@@ -332,7 +346,10 @@ class MacroEditorWindow(
                     newImages.add(frame.image)
                     if (!closed) change { actions[target] = MacroAction.fromJson(actions[target].toJson()).also { it.preview = frame } }
                     else MacroImages.discard(context, listOf(frame.image))
-                } else if (!closed) message("無法截圖，請先在主畫面啟用螢幕擷取")
+                } else if (!closed) message(
+                    if (ScreenCaptureService.instance == null)
+                        "螢幕擷取未啟用或已被系統停止，請回主畫面按「Start Screen Capture」，並選「分享整個螢幕」"
+                    else "沒有取得畫面；若授權時選了「分享單一應用程式」，請改選「分享整個螢幕」重新啟用")
             } catch (e: Exception) { if (!closed) message("截圖失敗：${e.message}") }
             finally { if (!closed) {
                 params.flags = params.flags or WindowManager.LayoutParams.FLAG_DIM_BEHIND

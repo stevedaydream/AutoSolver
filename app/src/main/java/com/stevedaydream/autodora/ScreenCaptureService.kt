@@ -72,7 +72,9 @@ class ScreenCaptureService : Service() {
         screenDensity = intent?.getIntExtra("DENSITY", 1) ?: 1
 
         // 修正邏輯：必須是 RESULT_OK (即 -1) 才代表使用者同意授權
-        if (resultCode == android.app.Activity.RESULT_OK && data != null && mediaProjection == null) {
+        if (resultCode == android.app.Activity.RESULT_OK && data != null) {
+            // 重新授權時改用新的 token（Android 14 起 token 只能用一次），先釋放舊的擷取
+            releaseProjection()
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpm.getMediaProjection(resultCode, data)
             setupVirtualDisplay()
@@ -91,9 +93,10 @@ class ScreenCaptureService : Service() {
             projection.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     super.onStop()
-                    // 當使用者從系統介面主動停止分享時的處理
-                    virtualDisplay?.release()
-                    virtualDisplay = null
+                    // 系統停止分享（使用者停止、鎖定螢幕等）後 token 已失效：
+                    // 完整釋放並結束服務，讓 instance 歸零，主畫面才能重新啟用擷取
+                    releaseProjection()
+                    stopSelf()
                 }
             }, null)
 
@@ -115,6 +118,7 @@ class ScreenCaptureService : Service() {
     // --- 修改開頭：修復截圖時的記憶體洩漏問題 ---
     // --- 修改開頭：修復 Bitmap 重複參照導致的 Recycle 崩潰陷阱 ---
     fun captureSnapshot(): Bitmap? {
+        if (virtualDisplay == null) return null
         var image: Image? = imageReader?.acquireLatestImage()
 
         var retries = 0
@@ -152,11 +156,19 @@ class ScreenCaptureService : Service() {
     }
 
 
+    private fun releaseProjection() {
+        virtualDisplay?.release()
+        virtualDisplay = null
+        imageReader?.close()
+        imageReader = null
+        val projection = mediaProjection
+        mediaProjection = null
+        runCatching { projection?.stop() }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        virtualDisplay?.release()
-        mediaProjection?.stop()
-        mediaProjection = null
+        releaseProjection()
         instance = null
     }
 
