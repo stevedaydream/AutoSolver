@@ -53,6 +53,19 @@ class TeamLayoutTest {
         assertEquals("未點到成員", TeamLayout.describe(hits[8].single()))
     }
 
+    @Test fun uncalibratedBoardSpansScreenWidthNearBottom() {
+        // 使用者截圖 923×2000：盤面頂端約 1056
+        val small = TeamLayout.estimateBoard(923f, 2000f)
+        assertEquals(153.83f, small.orb, 0.01f)
+        assertEquals(1056f, small.y, 2f)
+        // 1440×3120 模擬器：成員 6 方塊延伸到螢幕右緣
+        val big = TeamLayout.estimateBoard(1440f, 3120f)
+        val members = TeamLayout.members(big.x, big.y, big.orb)
+        assertEquals(1440f, members.last().right, 240f * 0.05f)
+        assertEquals(false, big.calibrated)
+        assertEquals(true, TeamLayout.board(Triple(0, 1240, 180), 1080f, 2340f).calibrated)
+    }
+
     @Test fun useSkillStage2IsReadOnTheDialog() {
         val hits = TeamLayout.classify(
             listOf(MacroAction.UseSkill(0, 1, true, 90f, 1100f, 540f, 1000f)), sx, sy, orb

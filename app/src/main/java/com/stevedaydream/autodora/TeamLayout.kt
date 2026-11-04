@@ -50,6 +50,23 @@ object TeamLayout {
         )
     }
 
+    /** 盤面位置：左上角與珠寬；calibrated=false 表示依螢幕尺寸估計 */
+    data class Board(val x: Float, val y: Float, val orb: Float, val calibrated: Boolean)
+
+    // 盤面底緣到螢幕底的距離（珠寬單位），量自實機截圖
+    private const val BOARD_BOTTOM_MARGIN = 1.14f
+
+    /** 未校正時：盤面橫跨整個螢幕寬（6 珠）並貼近底部 */
+    fun estimateBoard(screenWidth: Float, screenHeight: Float): Board {
+        val orb = screenWidth / SLOTS
+        return Board(0f, screenHeight - (5 + BOARD_BOTTOM_MARGIN) * orb, orb, calibrated = false)
+    }
+
+    /** 有校正值就用校正值，否則依螢幕尺寸估計 */
+    fun board(calibration: Triple<Int, Int, Int>?, screenWidth: Float, screenHeight: Float): Board =
+        calibration?.let { (x, y, orb) -> Board(x.toFloat(), y.toFloat(), orb.toFloat(), calibrated = true) }
+            ?: estimateBoard(screenWidth, screenHeight)
+
     fun hit(boxes: List<LayoutBox>, x: Float, y: Float): LayoutBox? = boxes.firstOrNull { it.contains(x, y) }
 
     /** 當下遊戲畫面：一般戰鬥（成員列）或已開啟技能確認頁 */

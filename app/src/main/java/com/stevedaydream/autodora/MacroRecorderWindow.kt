@@ -148,14 +148,19 @@ class MacroRecorderWindow(
     @SuppressLint("ClickableViewAccessibility")
     private fun showMemberOverlay() {
         val dp = context.resources.displayMetrics.density
-        if (!prefs.contains("orbSize")) Toast.makeText(context,
-            "尚未校正盤面範圍，成員位置可能不準；請先在設定的校正工具調整辨識區域", Toast.LENGTH_LONG).show()
-        val startX = prefs.getInt("startX", 0)
-        val startY = prefs.getInt("startY", 1000)
-        val orbSize = prefs.getInt("orbSize", 150)
-        // 成員按鈕直接蓋在遊戲成員列上（依盤面校正推算），點擊與重放都打在成員頭像中心
-        val memberBoxes = TeamLayout.members(startX.toFloat(), startY.toFloat(), orbSize.toFloat())
-        val dialogBoxes = TeamLayout.skillDialog(startX.toFloat(), startY.toFloat(), orbSize.toFloat())
+        // 成員按鈕直接蓋在遊戲成員列上（依盤面校正推算），點擊與重放都打在成員頭像中心；
+        // 未校正時依螢幕寬度估計盤面，避免預設值讓按鈕擠在左上角
+        val real = android.util.DisplayMetrics().also {
+            @Suppress("DEPRECATION") windowManager.defaultDisplay.getRealMetrics(it)
+        }
+        val board = TeamLayout.board(
+            if (prefs.contains("orbSize")) Triple(prefs.getInt("startX", 0), prefs.getInt("startY", 1000), prefs.getInt("orbSize", 150)) else null,
+            real.widthPixels.toFloat(), real.heightPixels.toFloat()
+        )
+        if (!board.calibrated) Toast.makeText(context,
+            "尚未校正盤面範圍，成員位置依螢幕寬度估計；若對不準請先用設定的校正工具調整辨識區域", Toast.LENGTH_LONG).show()
+        val memberBoxes = TeamLayout.members(board.x, board.y, board.orb)
+        val dialogBoxes = TeamLayout.skillDialog(board.x, board.y, board.orb)
         val btnH = (memberBoxes.first().bottom - memberBoxes.first().top).toInt()
 
         val overlayRoot = ReplayGuardLayout()

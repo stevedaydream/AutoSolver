@@ -22,9 +22,16 @@ class MacroEditorWindow(
     private var selected = 0
     private val prefs = context.getSharedPreferences("AutoDoraPrefs", Context.MODE_PRIVATE)
     /** 版面方塊依盤面校正推算（與實際解盤使用同一組參數） */
-    private val boardX get() = prefs.getInt("startX", 0).toFloat()
-    private val boardY get() = prefs.getInt("startY", 1000).toFloat()
-    private val orbSize get() = prefs.getInt("orbSize", 150).toFloat()
+    /** 未校正盤面時依螢幕尺寸估計，避免方塊只蓋到部分寬度 */
+    private val board get() = TeamLayout.board(
+        if (prefs.contains("orbSize")) Triple(prefs.getInt("startX", 0), prefs.getInt("startY", 1000), prefs.getInt("orbSize", 150)) else null,
+        // 估計時以錄製截圖的尺寸為準（與點擊座標同一個座標系），沒有截圖才用目前螢幕
+        (actions.firstNotNullOfOrNull { it.preview }?.width ?: metrics.widthPixels).toFloat(),
+        (actions.firstNotNullOfOrNull { it.preview }?.height ?: metrics.heightPixels).toFloat()
+    )
+    private val boardX get() = board.x
+    private val boardY get() = board.y
+    private val orbSize get() = board.orb
     private var hits: List<List<TeamLayout.TapHit>> = emptyList()
     private fun boxesFor(screen: TeamLayout.Screen) =
         if (screen == TeamLayout.Screen.MEMBERS) TeamLayout.members(boardX, boardY, orbSize)
@@ -268,7 +275,8 @@ class MacroEditorWindow(
         }
         settings.removeAllViews()
         val action = actions.getOrNull(selected)
-        status.text = if (action == null) "尚無動作，請新增步驟" else "${selected + 1} / ${actions.size}　${description(action)}"
+        status.text = if (action == null) "尚無動作，請新增步驟" else "${selected + 1} / ${actions.size}　${description(action)}" +
+            if (hits.getOrNull(selected).isNullOrEmpty() || board.calibrated) "" else "（未校正盤面，方塊為估計）"
         preview.visibility = if (action == null) View.INVISIBLE else View.VISIBLE
         if (action == null) return
         preview.display(action, metrics.widthPixels, metrics.heightPixels,
