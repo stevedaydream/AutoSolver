@@ -7,8 +7,6 @@ import android.graphics.PixelFormat
 import android.text.InputType
 import android.view.*
 import android.widget.*
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.*
 
 class MacroEditorWindow(
@@ -62,8 +60,36 @@ class MacroEditorWindow(
     private var playbackVersion = 0
     private lateinit var nameField: EditText
     private var multiSelect = false
-    /** 鍵盤開啟時收起預覽圖，讓下方設定欄位不被遮住 */
+    /**
+     * 輸入模式：懸浮視窗收不到鍵盤高度（ADJUST_RESIZE 與 IME insets 皆無效），
+     * 因此設定欄位取得焦點時把視窗移到螢幕上半部並收起預覽圖，鍵盤只會出現在下半部。
+     */
     private var imeVisible = false
+    private lateinit var controlsBar: View
+    private val statusBarHeight: Int get() {
+        @Suppress("DiscouragedApi", "InternalInsetResource")
+        val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) context.resources.getDimensionPixelSize(id) else px(24)
+    }
+
+    private fun setInputMode(on: Boolean) {
+        if (on == imeVisible || closed) return
+        imeVisible = on
+        val params = root.layoutParams as WindowManager.LayoutParams
+        if (on) {
+            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            params.y = statusBarHeight
+            params.height = (metrics.heightPixels * .5f).toInt() - statusBarHeight
+        } else {
+            params.gravity = Gravity.CENTER; params.y = 0
+            params.height = (metrics.heightPixels * .92f).toInt()
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .hideSoftInputFromWindow(root.windowToken, 0)
+        }
+        preview.visibility = if (on) View.GONE else if (actions.isEmpty()) View.INVISIBLE else View.VISIBLE
+        controlsBar.visibility = if (on) View.GONE else View.VISIBLE
+        wm.updateViewLayout(root, params)
+    }
     private val checked = sortedSetOf<Int>()
     private lateinit var multiButton: TextView
     private lateinit var selectAllButton: TextView
@@ -159,18 +185,7 @@ class MacroEditorWindow(
             gravity = Gravity.CENTER; dimAmount = .6f
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
-        // 懸浮視窗不受 ADJUST_RESIZE 影響：依鍵盤重疊高度自行墊高底部，並暫時收起預覽圖讓設定區露出
-        val basePadding = px(12)
-        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            v.setPadding(basePadding, basePadding, basePadding, maxOf(basePadding, ime + px(4)))
-            val shown = ime > 0
-            if (shown != imeVisible) {
-                imeVisible = shown
-                preview.visibility = if (shown) View.GONE else if (actions.isEmpty()) View.INVISIBLE else View.VISIBLE
-            }
-            insets
-        }
+        controlsBar = controls.parent as View
         wm.addView(root, params)
         refresh()
     }
@@ -332,6 +347,13 @@ class MacroEditorWindow(
         setText(value); setTextColor(Color.WHITE); textSize = 14f; setSingleLine()
         inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        setOnFocusChangeListener { _, has ->
+            if (has) setInputMode(true)
+            // 焦點移到其他輸入框時不還原；欄位被移除（套用後重繪）或點別處時才還原
+            else root.post { if (settings.findFocus() == null) setInputMode(false) }
+        }
+        setOnEditorActionListener { v, _, _ -> v.clearFocus(); setInputMode(false); true }
     }
     private fun timeField(title: String, ms: Long, zero: Boolean = false, replace: (Long) -> MacroAction) {
         val row = bar(settings); row.addView(label(title))
