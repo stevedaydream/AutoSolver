@@ -7,6 +7,8 @@ import android.graphics.PixelFormat
 import android.text.InputType
 import android.view.*
 import android.widget.*
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.*
 
 class MacroEditorWindow(
@@ -60,6 +62,8 @@ class MacroEditorWindow(
     private var playbackVersion = 0
     private lateinit var nameField: EditText
     private var multiSelect = false
+    /** 鍵盤開啟時收起預覽圖，讓下方設定欄位不被遮住 */
+    private var imeVisible = false
     private val checked = sortedSetOf<Int>()
     private lateinit var multiButton: TextView
     private lateinit var selectAllButton: TextView
@@ -154,6 +158,18 @@ class MacroEditorWindow(
         ).apply {
             gravity = Gravity.CENTER; dimAmount = .6f
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+        // 懸浮視窗不受 ADJUST_RESIZE 影響：依鍵盤重疊高度自行墊高底部，並暫時收起預覽圖讓設定區露出
+        val basePadding = px(12)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            v.setPadding(basePadding, basePadding, basePadding, maxOf(basePadding, ime + px(4)))
+            val shown = ime > 0
+            if (shown != imeVisible) {
+                imeVisible = shown
+                preview.visibility = if (shown) View.GONE else if (actions.isEmpty()) View.INVISIBLE else View.VISIBLE
+            }
+            insets
         }
         wm.addView(root, params)
         refresh()
@@ -277,7 +293,7 @@ class MacroEditorWindow(
         val action = actions.getOrNull(selected)
         status.text = if (action == null) "尚無動作，請新增步驟" else "${selected + 1} / ${actions.size}　${description(action)}" +
             if (hits.getOrNull(selected).isNullOrEmpty() || board.calibrated) "" else "（未校正盤面，方塊為估計）"
-        preview.visibility = if (action == null) View.INVISIBLE else View.VISIBLE
+        preview.visibility = when { imeVisible -> View.GONE; action == null -> View.INVISIBLE; else -> View.VISIBLE }
         if (action == null) return
         preview.display(action, metrics.widthPixels, metrics.heightPixels,
             if (action is MacroAction.Wait) nearbyFrame(selected) else action.preview)
