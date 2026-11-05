@@ -230,7 +230,10 @@ class MacroListWindow(
 
     private fun showEditActionsDialog(macro: Macro) {
         hide()
-        editor = MacroEditorWindow(context, scope, macro) { editor = null; show() }.also { it.show() }
+        editor = MacroEditorWindow(context, scope, macro, onContinueRecord = { saved ->
+            editor = null
+            MacroRecorderWindow(context, accessibilityService, scope, prefs, continueFrom = saved).show()
+        }) { editor = null; show() }.also { it.show() }
     }
     private fun playMacro(macro: Macro, repeat: Int) {
         if (isPlaying) {

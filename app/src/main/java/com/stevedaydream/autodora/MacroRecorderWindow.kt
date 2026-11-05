@@ -45,7 +45,9 @@ class MacroRecorderWindow(
     private val context: Context,
     private val accessibilityService: AutoPuzzlerAccessibilityService,
     private val scope: CoroutineScope,
-    private val prefs: SharedPreferences
+    private val prefs: SharedPreferences,
+    /** 接續錄製：新動作接在這個已儲存巨集的最後面，完成時直接存回同一個巨集 */
+    private val continueFrom: Macro? = null
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
@@ -101,7 +103,8 @@ class MacroRecorderWindow(
 
     // ─────────────────────────────────────────────────────────────────────────
 
-    fun show() = showSetupDialog()
+    // 接續錄製時略過隊伍設定，直接進入自由錄製（點成員、技能都會照實記錄）
+    fun show() = if (continueFrom != null) startFreeRecord() else showSetupDialog()
 
     // ── 步驟 1：隊伍人數對話框 ────────────────────────────────────────────────
     private fun showSetupDialog() {
@@ -640,7 +643,8 @@ class MacroRecorderWindow(
         } ?: ""
         val pendStr  = if (pendingBoardSignature != null) " ●固定待綁" else ""
         val pauseStr = if (isPaused) " [暫停]" else ""
-        statusText.text = "⏺ ${actions.size}個動作$lastStr$pendStr$pauseStr"
+        val base = continueFrom?.let { "接續「${it.name}」(${it.actions.size}步) ＋" } ?: ""
+        statusText.text = "⏺ $base${actions.size}個動作$lastStr$pendStr$pauseStr"
     }
 
     private fun finishRecording() {
@@ -652,6 +656,15 @@ class MacroRecorderWindow(
         if (actions.isEmpty()) {
             finishing = false
             Toast.makeText(context, "尚未錄製任何動作", Toast.LENGTH_SHORT).show(); return@launch
+        }
+        continueFrom?.let { base ->
+            // 以儲存檔的最新內容為底，避免覆蓋期間的其他修改；巨集已被刪除時改存成新巨集
+            val latest = MacroStorage.load(context, base.id) ?: base
+            val merged = latest.copy(actions = latest.actions + actions)
+            MacroStorage.save(context, merged)
+            Toast.makeText(context, "已接續儲存：${merged.name}（新增 ${actions.size}，共 ${merged.actions.size} 個動作）", Toast.LENGTH_SHORT).show()
+            hide()
+            return@launch
         }
         showNameDialog { name ->
             val macro = Macro(

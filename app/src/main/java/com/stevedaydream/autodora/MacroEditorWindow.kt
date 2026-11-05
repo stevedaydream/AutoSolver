@@ -13,6 +13,8 @@ class MacroEditorWindow(
     private val context: Context,
     private val scope: CoroutineScope,
     private val macro: Macro,
+    /** 有值時顯示「接續錄製」：儲存後關閉編輯器並以此巨集開始接續錄製 */
+    private val onContinueRecord: ((Macro) -> Unit)? = null,
     private val onClose: () -> Unit
 ) {
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -114,15 +116,7 @@ class MacroEditorWindow(
         }
         header.addView(nameField, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = px(6) })
         button(header, "取消") { close() }
-        button(header, "儲存") {
-            val name = nameField.text.toString().trim()
-            if (name.isBlank()) { nameField.error = "請輸入名稱"; return@button }
-            try {
-                MacroStorage.save(context, macro.copy(name = name, actions = actions.toList()))
-                MacroImages.discard(context, macro.actions.mapNotNull { it.preview?.image })
-                close()
-            } catch (e: Exception) { message("儲存失敗：${e.message}") }
-        }
+        button(header, "儲存") { save()?.let { close() } }
         val tools = scrollingBar(root)
         undoButton = button(tools, "復原") { restore(undo, redo) }
         redoButton = button(tools, "重做") { restore(redo, undo) }
@@ -141,6 +135,14 @@ class MacroEditorWindow(
         button(tools, "＋點擊") { add(MacroAction.Tap(metrics.widthPixels / 2f, metrics.heightPixels / 2f)) }
         button(tools, "＋滑動") { add(MacroAction.Swipe(listOf(metrics.widthPixels * .3f to metrics.heightPixels * .5f, metrics.widthPixels * .7f to metrics.heightPixels * .5f), 500)) }
         button(tools, "＋等待") { add(MacroAction.Wait(1000)) }
+        onContinueRecord?.let { start ->
+            button(tools, "⏺接續錄製") {
+                stopPlayback()
+                val saved = save() ?: return@button
+                message("已儲存目前修改，從第 ${saved.actions.size} 步之後接著錄製")
+                dismiss(); start(saved)
+            }
+        }
         // 多選模式專用列：全選／複製／刪除，只在多選時顯示
         multiBar = scrollingBar(root)
         selectAllButton = button(multiBar, "全選") {
@@ -451,6 +453,17 @@ class MacroEditorWindow(
         playback?.cancel(); playback = null; paused = false
         continuePreview = false
         if (::preview.isInitialized) { preview.stop(); preview.editable = true }
+    }
+    /** 儲存名稱與步驟；名稱空白或寫入失敗時回傳 null */
+    private fun save(): Macro? {
+        val name = nameField.text.toString().trim()
+        if (name.isBlank()) { nameField.error = "請輸入名稱"; return null }
+        return try {
+            macro.copy(name = name, actions = actions.toList()).also {
+                MacroStorage.save(context, it)
+                MacroImages.discard(context, macro.actions.mapNotNull { a -> a.preview?.image })
+            }
+        } catch (e: Exception) { message("儲存失敗：${e.message}"); null }
     }
     private fun close() {
         dismiss()
