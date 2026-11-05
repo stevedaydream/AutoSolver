@@ -14,8 +14,8 @@ android {
         applicationId = "com.stevedaydream.autodora"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "10"
+        versionCode = 12
+        versionName = "11"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
