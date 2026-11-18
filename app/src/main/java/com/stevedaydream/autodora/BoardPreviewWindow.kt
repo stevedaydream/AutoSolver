@@ -29,10 +29,11 @@ class BoardPreviewWindow(
     fun show() {
         if (overlayView != null) return
 
-        val displayMetrics = context.resources.displayMetrics
-        var orbSize = prefs.getInt("orbSize", displayMetrics.widthPixels / 6)
-        var startX = prefs.getInt("startX", 0)
-        var startY = prefs.getInt("startY", displayMetrics.heightPixels / 2)
+        // 未校正時從依螢幕尺寸估計的盤面開始調整
+        val initial = BoardCalibration.resolve(context, prefs)
+        var orbSize = initial.orbSize
+        var startX = initial.startX
+        var startY = initial.startY
 
         // 關鍵修改：使用無障礙特權圖層
         params = WindowManager.LayoutParams(

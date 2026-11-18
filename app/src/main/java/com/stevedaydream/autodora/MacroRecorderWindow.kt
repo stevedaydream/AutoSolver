@@ -157,7 +157,7 @@ class MacroRecorderWindow(
             @Suppress("DEPRECATION") windowManager.defaultDisplay.getRealMetrics(it)
         }
         val board = TeamLayout.board(
-            if (prefs.contains("orbSize")) Triple(prefs.getInt("startX", 0), prefs.getInt("startY", 1000), prefs.getInt("orbSize", 150)) else null,
+            if (prefs.contains("orbSize")) Triple(prefs.getInt("startX", 0), prefs.getInt("startY", 0), prefs.getInt("orbSize", 0)).takeIf { it.third > 0 } else null,
             real.widthPixels.toFloat(), real.heightPixels.toFloat()
         )
         if (!board.calibrated) Toast.makeText(context,
@@ -601,9 +601,11 @@ class MacroRecorderWindow(
         val bitmap = ScreenCaptureService.instance?.captureSnapshot() ?: run {
             Toast.makeText(context, "擷取畫面失敗", Toast.LENGTH_SHORT).show(); return
         }
-        val sX = prefs.getInt("startX", 0)
-        val sY = prefs.getInt("startY", 1000)
-        val oS = prefs.getInt("orbSize", 150)
+        // 未校正時依螢幕尺寸估計盤面，不再用固定預設值（BoardCalibration）
+        val calibration = BoardCalibration.resolve(context, prefs)
+        val sX = calibration.startX
+        val sY = calibration.startY
+        val oS = calibration.orbSize
         scope.launch {
             val board = withContext(Dispatchers.Default) {
                 BoardAnalyzer().analyzeBoard(bitmap, sX, sY, oS)

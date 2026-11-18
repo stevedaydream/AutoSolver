@@ -218,9 +218,11 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
 
         btnPreview.setOnClickListener {
             val bitmap = ScreenCaptureService.instance?.captureSnapshot() ?: return@setOnClickListener
-            val sX = prefs.getInt("startX", 0)
-            val sY = prefs.getInt("startY", 1000)
-            val oS = prefs.getInt("orbSize", 150)
+            // 未校正時依螢幕尺寸估計盤面，不再用固定預設值（BoardCalibration）
+            val calibration = BoardCalibration.resolve(context, prefs)
+            val sX = calibration.startX
+            val sY = calibration.startY
+            val oS = calibration.orbSize
             tryLoadTemplates()
             updateStatus(Phase.ANALYZE)
             scope.launch {
@@ -256,9 +258,11 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             scope.launch {
                 while (isAutoRunning) {
                     autoRound++
-                    val sX = prefs.getInt("startX", 0)
-                    val sY = prefs.getInt("startY", 1000)
-                    val oS = prefs.getInt("orbSize", 150)
+                    // 未校正時依螢幕尺寸估計盤面，不再用固定預設值（BoardCalibration）
+                    val calibration = BoardCalibration.resolve(context, prefs)
+                    val sX = calibration.startX
+                    val sY = calibration.startY
+                    val oS = calibration.orbSize
                     updateStatus(Phase.CAPTURE, round = autoRound)
                     val bitmap = ScreenCaptureService.instance?.captureSnapshot() ?: break
                     updateStatus(Phase.ANALYZE, round = autoRound)
@@ -1032,9 +1036,9 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }
     }
 
-    private fun currentGeometry() = BoardGeometry(
-        prefs.getInt("startX", 0).toFloat(), prefs.getInt("startY", 1000).toFloat(), prefs.getInt("orbSize", 150).toFloat()
-    )
+    private fun currentGeometry() = BoardCalibration.resolve(context, prefs).let {
+        BoardGeometry(it.startX.toFloat(), it.startY.toFloat(), it.orbSize.toFloat())
+    }
 
     private fun closeSettings() {
         if (!isSettingsOpen) return
@@ -1114,9 +1118,13 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
      */
     private fun analyzeAndComputePath(autoExecute: Boolean = false, settleMs: Long = 0L) {
         if (isGestureRunning) return
-        val sX = prefs.getInt("startX", 0)
-        val sY = prefs.getInt("startY", 1000)
-        val oS = prefs.getInt("orbSize", 150)
+        // 未校正時依螢幕尺寸估計盤面，不再用固定預設值（BoardCalibration）
+        val calibration = BoardCalibration.resolve(context, prefs)
+        val sX = calibration.startX
+        val sY = calibration.startY
+        val oS = calibration.orbSize
+        if (!calibration.calibrated) Toast.makeText(context,
+            "尚未校正盤面範圍，已依螢幕尺寸估計；若對不準請用設定的「調整辨識區域」校正", Toast.LENGTH_LONG).show()
         val hadPreview = pathOverlayWindow.isShowing || previewBar.isShowing
         clearPreview()
         tryLoadTemplates()
@@ -1251,9 +1259,11 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             Toast.makeText(context, "請先啟用螢幕擷取", Toast.LENGTH_SHORT).show()
             return
         }
-        val sX = prefs.getInt("startX", 0)
-        val sY = prefs.getInt("startY", 1000)
-        val oS = prefs.getInt("orbSize", 150)
+        // 未校正時依螢幕尺寸估計盤面，不再用固定預設值（BoardCalibration）
+        val calibration = BoardCalibration.resolve(context, prefs)
+        val sX = calibration.startX
+        val sY = calibration.startY
+        val oS = calibration.orbSize
 
         previewWindow?.hide()
         updateStatus(Phase.ANALYZE, note = "採集中")

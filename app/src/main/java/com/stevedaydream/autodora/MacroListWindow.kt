@@ -399,9 +399,11 @@ class MacroListWindow(
 
     /** 執行一輪巨集動作；回傳 false 表示發生錯誤或被停止，應中止循環 */
     private suspend fun runMacroActions(macro: Macro, status: (String) -> String): Boolean {
-        val sX = prefs.getInt("startX", 0)
-        val sY = prefs.getInt("startY", 1000)
-        val oS = prefs.getInt("orbSize", 150)
+        // 未校正時依螢幕尺寸估計盤面，不再用固定預設值（BoardCalibration）
+        val calibration = BoardCalibration.resolve(context, prefs)
+        val sX = calibration.startX
+        val sY = calibration.startY
+        val oS = calibration.orbSize
         val is8Way = prefs.getBoolean("is8Way", false)
         val beamWidth = prefs.getInt("beamWidth", 200)
         val gestureMs = prefs.getLong("gestureMs", 5000L)
