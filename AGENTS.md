@@ -15,7 +15,7 @@
 - UI 修改須實際操作並以截圖檢查；不可只依賴編譯。
 
 ## 專案禁忌
-- 本次測試只使用 `I:\project\android_emulator` 的 Android Workbench 所建立模擬器；每次先核對 AVD 名稱，ADB 指令必須帶 `-s`，不得操作實體平板。
+- 本次測試只使用 `H:\project\android_emulator` 的 Android Workbench 所建立模擬器；每次先核對 AVD 名稱，ADB 指令必須帶 `-s`，不得操作實體平板。
 - 懸浮視窗驗證用 ADB 截圖；UIAutomator 會中斷無障礙服務（BF-002）。
 - 勿用目前 Android Studio 的 Java 25 JBR 建置（BF-001）。
 - 簽章金鑰與 local.properties 不進 Git；版本號在 app/build.gradle.kts。
