@@ -403,10 +403,7 @@ class BoardAnalyzer {
 
         for (r in 0 until 5) {
             for (c in 0 until 4) {
-                val t = board[r][c]
-                if (t != OrbType.UNKNOWN && board[r][c+1] == t && board[r][c+2] == t) {
-                    if (c + 3 >= 6 || board[r][c+3] != t) score += 8000 * (r + 1)
-                }
+                if (BoardHeuristics.isExactHorizontalTriple(board, r, c)) score += 8000 * (r + 1)
             }
         }
         return score
@@ -444,10 +441,80 @@ class BoardAnalyzer {
         beamWidth: Int = 200,
         shapeGoals: List<ShapeGoal> = emptyList()
     ): Pair<List<Pair<Float, Float>>, Int> {
-        if (!isCompleteBoard(board)) return Pair(emptyList(), 0)
+        val best = runBeam(board, is8Way, strategyMode, startMode, steps, beamWidth, shapeGoals, poolCapacity = 0)
+            .firstOrNull() ?: return Pair(emptyList(), 0)
+        val pixelPath = mutableListOf<Pair<Float, Float>>()
+        for (i in 0 until best.pathLen) {
+            pixelPath.add(Pair(startX + best.pathC[i] * orbSize + orbSize / 2, startY + best.pathR[i] * orbSize + orbSize * 5f / 8f))
+        }
+        return Pair(pixelPath, best.combos)
+    }
+
+    /**
+     * 同一套 Beam 搜尋，但回傳去重後的 Top-K 候選（第一條與 [calculateOptimalPath] 相同）。
+     * 每條都經 [CandidateFactory] 重新回播、驗證路徑合法性、形狀與 Combo。
+     */
+    fun calculateOptimalCandidates(
+        board: Array<Array<OrbType>>,
+        is8Way: Boolean = true,
+        strategyMode: Int = 0,
+        startMode: Int = 0,
+        steps: Int = 35,
+        beamWidth: Int = 200,
+        shapeGoals: List<ShapeGoal> = emptyList(),
+        maxCandidates: Int = 5
+    ): List<PathCandidate> {
+        val nodes = runBeam(board, is8Way, strategyMode, startMode, steps, beamWidth, shapeGoals,
+            poolCapacity = (maxCandidates * 6).coerceAtLeast(1))
+        val verifier = shapeGoals.takeIf { it.isNotEmpty() }?.let { ShapeVerifier(it) }
+        val simulator = BoardSimulator(5, 6)
+        val built = nodes.mapNotNull { node ->
+            val cells = (0 until node.pathLen).map { node.pathR[it] * 6 + node.pathC[it] }
+            CandidateFactory.build(board, cells, is8Way, verifier, CandidateSource.BEAM, node.score.toLong(), simulator)
+        }.filter { it.executable }
+        return CandidateFactory.dedupe(built).take(maxCandidates.coerceAtLeast(1))
+    }
+
+    /** 提供給 Shape-Aware 求解器的計分；Combo 與 firstWave 來自同一次 resolve，平鋪評分才會讀到正確的首消標記。 */
+    internal fun scoreBoard(board: Array<Array<OrbType>>, strategyMode: Int): BoardScore {
+        val combos = calculateCombosWithCascade(board)
+        val firstWave = firstWaveCombos
+        val score = when (strategyMode) {
+            1 -> evaluateBottomUp(board, combos)
+            2 -> evaluateAmelioration(board, combos)
+            else -> evaluateStandard(board, combos)
+        }
+        return BoardScore(combos, firstWave, score)
+    }
+
+    /** SolverMode.SHAPE_AWARE 入口：形狀硬約束優先，回傳明確狀態。 */
+    fun solveShapeAware(
+        board: Array<Array<OrbType>>,
+        shapeGoals: List<ShapeGoal>,
+        budget: SearchBudget,
+        strategyMode: Int = 0,
+        cancelled: () -> Boolean = { false }
+    ): ShapeSolveResult = ShapeAwareSolver(shapeGoals, { scoreBoard(it, strategyMode) }, cancelled = cancelled).solve(board, budget)
+
+    /**
+     * Beam 核心。回傳依原排序（分數 → Combo → 較短）排列的節點：第一個即全域最佳（與舊版相同）。
+     * poolCapacity > 0 時另外保留結果盤面不同的前幾名，供 Top-K 候選使用。
+     */
+    private fun runBeam(
+        board: Array<Array<OrbType>>,
+        is8Way: Boolean,
+        strategyMode: Int,
+        startMode: Int,
+        steps: Int,
+        beamWidth: Int,
+        shapeGoals: List<ShapeGoal>,
+        poolCapacity: Int
+    ): List<SearchNode> {
+        if (!isCompleteBoard(board)) return emptyList()
         val shapeEvaluator = shapeGoals.takeIf { it.isNotEmpty() }?.let { ShapeEvaluator(it) }
-        if (shapeEvaluator != null && !shapeEvaluator.canAttempt(board)) return Pair(emptyList(), 0)
+        if (shapeEvaluator != null && !shapeEvaluator.canAttempt(board)) return emptyList()
         val maxSteps = steps.coerceIn(5, 60)
+        val pool = if (poolCapacity > 0) CandidatePool(poolCapacity, maxSteps) else null
         val beam = beamWidth.coerceIn(30, 500)
 
         val nextNodes = Array(beam * 8) { SearchNode(maxSteps) }
@@ -529,7 +596,9 @@ class BoardAnalyzer {
                         val isBetter = nextNode.score > globalBestNode.score ||
                             (nextNode.score == globalBestNode.score && nextNode.combos > globalBestNode.combos) ||
                             (nextNode.score == globalBestNode.score && nextNode.combos == globalBestNode.combos && nextNode.pathLen < globalBestNode.pathLen)
-                        if (isBetter && nextNode.shapes.satisfied == shapeGoals.size) globalBestNode.copyFrom(nextNode)
+                        val shapesDone = nextNode.shapes.satisfied == shapeGoals.size
+                        if (isBetter && shapesDone) globalBestNode.copyFrom(nextNode)
+                        if (pool != null && shapesDone && nextNode.combos > 0) pool.offer(nextNode)
                     }
                 }
             }
@@ -540,12 +609,44 @@ class BoardAnalyzer {
             }
         }
 
-        if (globalBestNode.combos <= 0 || globalBestNode.pathLen <= 1) return Pair(emptyList(), 0)
-        val pixelPath = mutableListOf<Pair<Float, Float>>()
-        for (i in 0 until globalBestNode.pathLen) {
-            pixelPath.add(Pair(startX + globalBestNode.pathC[i] * orbSize + orbSize / 2, startY + globalBestNode.pathR[i] * orbSize + orbSize * 5f / 8f))
+        if (globalBestNode.combos <= 0 || globalBestNode.pathLen <= 1) return emptyList()
+        val bestKey = StateKey.of(globalBestNode.board)
+        val others = pool?.sorted()?.filter { StateKey.of(it.board) != bestKey } ?: emptyList()
+        return listOf(globalBestNode) + others
+    }
+
+    /** 依結果盤面去重的有界候選池；排序與 globalBest 相同（分數 → Combo → 較短 → 先出現）。 */
+    private class CandidatePool(private val capacity: Int, private val maxSteps: Int) {
+        private class Entry(val node: SearchNode, val seq: Long)
+        private val entries = HashMap<StateKey, Entry>()
+        private var seq = 0L
+        private val order = Comparator<Entry> { a, b ->
+            when {
+                a.node.score != b.node.score -> b.node.score.compareTo(a.node.score)
+                a.node.combos != b.node.combos -> b.node.combos.compareTo(a.node.combos)
+                a.node.pathLen != b.node.pathLen -> a.node.pathLen.compareTo(b.node.pathLen)
+                else -> a.seq.compareTo(b.seq)
+            }
         }
-        return Pair(pixelPath, globalBestNode.combos)
+        private var worst: Entry? = null
+
+        fun offer(node: SearchNode) {
+            seq++
+            val probe = Entry(node, seq)
+            if (entries.size >= capacity && worst != null && order.compare(probe, worst!!) >= 0) return
+            val key = StateKey.of(node.board)
+            val existing = entries[key]
+            if (existing != null && order.compare(probe, existing) >= 0) return
+            val copy = SearchNode(maxSteps).also { it.copyFrom(node) }
+            entries[key] = Entry(copy, seq)
+            if (entries.size > capacity) {
+                val drop = entries.entries.maxWithOrNull { a, b -> order.compare(a.value, b.value) }!!
+                entries.remove(drop.key)
+            }
+            worst = entries.values.maxWithOrNull(order)
+        }
+
+        fun sorted(): List<SearchNode> = entries.values.sortedWith(order).map { it.node }
     }
 
     /**

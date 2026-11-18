@@ -437,7 +437,19 @@ class MacroListWindow(
                     // 等待盤面出現且穩定再解算，取代固定等待
                     val board = waitForStableBoard(sX, sY, oS) ?: return false
                     val (path, _) = withContext(Dispatchers.Default) {
-                        BoardAnalyzer().calculateOptimalPath(
+                        // 與懸浮窗共用「版型求解器」設定；Shape-Aware 只有 SOLVED 才回傳路徑，未達成即停止巨集
+                        val useShapeAware = action.shapeGoals.isNotEmpty() &&
+                            SolverMode.entries.getOrNull(prefs.getInt("solverMode", 0)) == SolverMode.SHAPE_AWARE
+                        if (useShapeAware) {
+                            val result = BoardAnalyzer().solveShapeAware(
+                                board, action.shapeGoals,
+                                SearchBudget(maxSteps = action.steps, beamWidth = beamWidth, is8Way = is8Way,
+                                    startMode = startMode, timeLimitMs = 3000L),
+                                action.strategyMode
+                            ) { stopRequested }
+                            val geometry = BoardGeometry(sX.toFloat(), sY.toFloat(), oS.toFloat())
+                            Pair(geometry.toGesturePoints(result.path), result.best?.deterministicCombos ?: 0)
+                        } else BoardAnalyzer().calculateOptimalPath(
                             board = board,
                             orbSize = oS.toFloat(),
                             startX = sX.toFloat(),

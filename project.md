@@ -1,6 +1,6 @@
 # AutoDora
 
-> 最後更新：2026-11-04（巨集組合、改名、跨巨集複製貼上、懸浮視窗外觀）
+> 最後更新：2026-11-18（Shape-Aware 求解、精確形狀驗證、路線預覽與多候選切換）
 
 ## 1. 專案概述
 Android 轉珠與觸控腳本助手，透過無障礙服務重放觸控、MediaProjection 擷取盤面，支援一般搜尋與 TFLite 解盤。
@@ -9,6 +9,10 @@ Android 轉珠與觸控腳本助手，透過無障礙服務重放觸控、MediaP
 - 主畫面處理權限與螢幕擷取；AutoPuzzlerAccessibilityService 管理懸浮視窗及手勢執行。
 - BoardSimulator 共用首批與不補新珠的確定性連鎖評估；BeamSelector 使用有界優先佇列，保留同分展開順序。
 - ShapeEvaluator 檢查首批獨立五顆的 T／L／十字，旋轉與屬性配對；搜尋只回傳全部條件成立的路徑。
+- PlacementEnumerator 預先列舉並快取每個版型的配置（格位以 Long 遮罩表示，L 可選鏡像）；ShapeVerifier 在放手前盤面精確驗證，回溯配對且已選配置不得共用格位，並回報不可行原因。ShapeEvaluator 的達成數改由它提供，潛力分數不變。
+- ShapeAwareSolver（SolverMode.SHAPE_AWARE，預設仍為原 Beam）：形狀完成數 → 潛力 → 分數的 Beam（精確狀態去重），再從每個起手點與 Top-K 種子做有界 DFS；時間／節點上限與取消；回傳 SOLVED／INFEASIBLE／TIMEOUT／GOALS_UNSATISFIED／CANCELLED，只有 SOLVED 有路徑。
+- PathCandidate 以格位路徑為單一可信來源（起點、方向、首消／連鎖 Combo、形狀配對、盤面指紋）；CandidateFactory 重播驗證並把舊 Pair 像素 API 轉成候選。BoardAnalyzer.calculateOptimalCandidates 由同一套 Beam 產出去重 Top-K，第一條與 calculateOptimalPath 相同。
+- PathPreviewController（純邏輯）管理選路、顯示開關、預演進度與失效；PathGeometryBuilder 預先計算畫線、重疊錯開、箭頭與步序；PathRenderView 依主題繪製；PathOverlayWindow 只保留一個 FLAG_NOT_TOUCHABLE 畫布；PathPreviewBar 是盤面上方的可點擊控制列。
 - RecognitionLearningEngine 背景呼叫 llama.cpp；失敗或含不確定格時，依設定改用 Gemini 一次。RecognitionSampleStore 保存裁切圖片與待審標籤，人工確認後由 VisualSampleMatcher 提供相似圖片比對。
 - MacroRecorderWindow 攔截觸控、擷取動作前畫面並重放；RecordingTouchGate 配對 DOWN / UP，忽略重放後孤立或重複的 UP。
 - MacroEditorWindow 管理編輯草稿、歷史與預覽播放；MacroGestureView 依原始畫面座標繪製動畫並處理拖曳。
@@ -40,6 +44,12 @@ OrbAnnotation 包含屬性、多重狀態集合、種族標記集合與不確定
 - Beam 與 ML 統一計算既有符石落下形成的連鎖；未辨識完整的盤面不進入求解，避免把未知格當空位。
 - Beam 候選篩選改為有界優先佇列；固定 1600 選 200 案例，分數讀取由 320000 降至 17776，結果與舊版相同，此數字不代表整體解盤加速倍率。
 - 懸浮設定填滿可用畫面，固定標題與關閉按鈕、內容可捲動；關閉還原懸浮位置，校正工具等寬顯示，ML 屬性列可橫向捲動。
+- 路線預覽：一般／平鋪／昇華／版型模式產生最多 5 條去重候選，控制列「◀ 路線 i/N ▶」切換（首尾停用），顯示首消、模擬連鎖 Combo、步數與每個版型 ✓／✗；可隱藏／顯示、純動畫預演／暫停／繼續（不送手勢）。四種主題（AutoDora 風格多層輪廓＋箭頭＋起／終、原版漸層、高對比、舊版還原），彩虹或純色、可選步序數字；版型達成時淡色標出目標格。設定皆保存。
+- 執行所選路線前先做靜態檢查，再隱藏畫線、重新截圖辨識；盤面指紋或校正不同即拒絕並清空預覽。新截圖、校正、建立樣板、變更版型／8 向／策略／求解器、開巨集、自動模式與關閉懸浮窗都會使預覽失效。一鍵▶與自動模式時序不變，只執行通過驗證的第一條候選。
+- 「舊版還原」主題依 AutoDora V3.4.3 DEX 位元組碼的 drawPath／drawAL／getRainbowColor 參數：外層黑 12px＋白（或灰階）9px、內層黑 6px＋彩虹（或灰階）5px、重疊錯開 6px、起點 20px 圓圈、只在終點畫一個 40×18px 淺灰箭頭；彩虹採舊版 7 錨點整數內插，AutoDora 風格主題也改用同一組彩虹。
+- 設定「自動模式每輪先確認路線」（預設關閉）：每輪顯示候選並等待選路與執行，執行前同樣重新截圖驗證；盤面已變則下一輪重算，■／✕ 停止自動。
+- 巨集「自動盤」沿用懸浮窗的版型求解器設定；選 Shape-Aware 時只有 SOLVED 才執行，否則停止巨集。
+- 修正平鋪模式把四、五連珠尾端誤當三連加分（左側未檢查）。
 - 修正錄製觸控配對，完成錄製前等待最後一次重放結束，保留使用者刻意連點。
 - 錄製重放等待穿透旗標生效，偵測到手勢打回遮罩時自動重送；重放不再等待截圖存檔（BF-004）。
 - 接近全螢幕的圖像編輯器；點擊漣漪、滑動路徑動畫、拖曳座標與起終點、重畫路徑及修改秒數。
@@ -60,6 +70,8 @@ OrbAnnotation 包含屬性、多重狀態集合、種族標記集合與不確定
 - 主畫面與懸浮設定提供目前版本及手動檢查更新；顯示檢查中、最新版或連線失敗，有新版時沿用更新說明與下載安裝流程。
 
 ## 6. 已知問題 / 待辦
+- Shape-Aware 對 57 盤合成資料集達標 54/57（原 Beam 53/57），p50 約慢 3ms，見 docs/shape-benchmark.md；資料集為由完成盤面隨機打亂，不代表實戰盤面。目前 L 為 3×3 等臂直角，開啟鏡像不會增加朝向；若遊戲 L 實為不對稱形狀需另行定義。
+- 舊版還原主題來自靜態位元組碼，舊版 APK 只含 32 位元原生庫且 targetSdk 19，無法在目前 64 位元 Android 模擬器執行，故未與舊版實機畫面像素比對；舊版尺寸為裝置像素，新版以 120px 珠寬為 1 倍等比放大屬推定；舊版另有 clipRect XOR 裁切細節未還原。巨集自動盤的 Shape-Aware 切換只經編譯與既有測試，未在模擬器跑巨集。執行前重新辨識若遇辨識不穩，可能誤判盤面已變更而拒絕。
 - 版型搜尋為有限廣度的啟發式搜尋，未找到不代表無解；目前沿用 5×6 盤面與既有移動規則，尚未涵蓋 PAD／TOS 特殊盾及異常符石規則。
 - Gemini 切換邏輯已測試；尚未提供雲端金鑰，實際 Gemini HTTP 呼叫未驗證。確認樣本目前是相似圖片比對，尚未重新訓練通用分類模型；特殊狀態準確率與遊戲內效果尚未驗證，求解器尚未使用狀態規則。
 - Android 已透過模擬器主機通道實際呼叫既有 llama.cpp，完成模型查詢與合成圖片 30 格 JSON 回應驗證（約 29 秒）；裝置端 Tailscale 連線仍須在同一 tailnet 實測。
@@ -70,6 +82,8 @@ OrbAnnotation 包含屬性、多重狀態集合、種族標記集合與不確定
 - 本機 Wrapper 8.13 下載未完成；以 JDK 17 與快取 Gradle 8.14.3 執行上述三項任務通過。快取執行檔位於 `C:\Users\User\.gradle\wrapper\dists\gradle-8.14.3-bin\cv11ve7ro1n3o1j4so8xd9n66\gradle-8.14.3\bin\gradle.bat`。
 
 ## 7. 開發歷程
+- 2026-11-19：新增舊版還原主題（由 V3.4.3 DEX 解出彩虹錨點、筆寬、箭頭尺寸）、自動模式先確認、巨集自動盤沿用求解器設定。70 項 JVM 通過；在 Workbench AVD（awb_3025991c8dba）確認舊版還原畫面、自動模式等待確認、改選路線 2 執行後第 2 輪再次等待、■ 停止清除預覽。
+- 2026-11-18：依 AutoDora APK 分析 v3 與 Codex 任務 v2 實作 P0 平鋪修正、P0-S 精確驗證、P1-S benchmark、P2-S Shape-Aware、P0~P3-V 路線預覽。JDK 21 建置、68 項 JVM（含新增 29 項，benchmark 預設略過）通過；在 Workbench AVD（awb_3025991c8dba，emulator-5554，1440×3120）以合成盤面圖實際操作：辨識失敗提示、AutoDora 風格 5 條候選切換、預演暫停、執行後完成、Shape-Aware 火 T＋暗十字 2/2（高對比＋步序＋目標遮罩）、形狀未達成停用執行、換盤面後執行被拒；截圖在 build/validation/path-preview/。遊戲內尚未實測。
 - 2026-11-05：新增「接續錄製」：編輯器工具列按下後先儲存目前修改，略過隊伍設定直接進入自由錄製，完成時把新動作接在原巨集最後並存回同一個巨集（以儲存檔最新內容為底）。建置與 JVM 測試通過；在 Workbench AVD（awb_3025991c8dba，emulator-5554）實際從 2 步的巨集接續錄 2 次點擊，確認存回後為 6 步（含間隔等待）。
 - 2026-11-05：v9 的 IME insets 做法在使用者手機無效（懸浮視窗收不到鍵盤高度）。改為設定欄位取得焦點時把編輯器移到螢幕上半部、收起預覽與播放列，套用／鍵盤完成／欄位失焦時還原。建置與 JVM 測試通過；在 Workbench AVD（awb_3025991c8dba，emulator-5554）實際點等待秒數欄位，以 ADB 截圖確認欄位在鍵盤上方，套用與鍵盤 ✓ 皆可還原。
 - 2026-11-04：修正未校正盤面時方塊縮在左上角，改依截圖／螢幕尺寸估計。新增 JVM 測試通過；在 Workbench AVD 以使用者提供的 1080×2340 遊戲截圖為底圖，確認成員列與技能確認頁（技能 1／2、確定、取消）方塊對齊。

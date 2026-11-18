@@ -59,6 +59,8 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
     testImplementation(libs.junit)
+    // Android 的 org.json 在 JVM 單元測試中是空殼，ShapeGoal JSON 相容性測試需要實作
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

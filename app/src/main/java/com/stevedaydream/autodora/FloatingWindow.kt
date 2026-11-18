@@ -64,7 +64,30 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private var currentGestureMs = prefs.getLong("gestureMs", 5000L)             // 轉珠總時間（毫秒）
     private var currentRoundIntervalMs = prefs.getLong("roundIntervalMs", 4500L) // 自動輪間隔（毫秒）
 
-    private var lastCalculatedResult: Pair<List<Pair<Float, Float>>, Int>? = null
+    // ── 路線預覽：候選、選路與執行共用同一份 PathCandidate ──
+    private val previewController = PathPreviewController(maxCandidates = 5)
+    private var previewGeometry: BoardGeometry? = null
+    private var previewGoals: List<ShapeGoal> = emptyList()
+    private var renderedCandidateId: String? = null
+    private var renderedStyle: PathRenderStyle? = null
+    private var isPreviewAnimating = false
+    private var lastAnimationProgress = 0f
+    private var solverMode = SolverMode.entries.getOrElse(prefs.getInt("solverMode", 0)) { SolverMode.BEAM }
+    private var previewTheme = PathPreviewTheme.entries.getOrElse(prefs.getInt("previewTheme", 0)) { PathPreviewTheme.LEGACY_INSPIRED }
+    private var previewColorMode = PathColorMode.entries.getOrElse(prefs.getInt("previewColorMode", 0)) { PathColorMode.RAINBOW }
+    private var previewShowSteps = prefs.getBoolean("previewShowSteps", false)
+    private val previewBar = PathPreviewBar(
+        context,
+        onPrevious = { previewController.previous() },
+        onNext = { previewController.next() },
+        onToggleVisible = { previewController.toggleVisible() },
+        onPlay = { togglePreviewPlayback() },
+        onExecute = { executeSelectedPath() },
+        onClose = { autoConfirmDecision?.complete(false) ?: clearPreview() }
+    )
+    /** 自動模式每輪先顯示候選，等使用者按執行才送手勢；預設關閉，不影響原行為。 */
+    private var autoConfirmFirst = prefs.getBoolean("autoConfirmFirst", false)
+    private var autoConfirmDecision: CompletableDeferred<Boolean>? = null
     @Volatile private var isAutoRunning = false
     @Volatile private var isGestureRunning = false
     @Volatile private var autoRound = 0
@@ -81,6 +104,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
 
     fun show() {
         if (rootLayout != null) return
+        previewController.listener = { state -> renderPreview(state) }
         if (RecognitionLearningEngine.instance == null) RecognitionLearningEngine.instance = RecognitionLearningEngine(context.applicationContext)
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -207,7 +231,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                         if (!bitmap.isRecycled) bitmap.recycle()
                         Pair(result, analyzer.lastFeatures)
                     }
-                    pathOverlayWindow.hide()
+                    clearPreview()
                     recognitionOverlayWindow.show(board, features, sX, sY, oS)
                     updateStatus(Phase.PREVIEW, note = "點擊盤面關閉")
                 } catch (e: Throwable) {
@@ -220,7 +244,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             if (isAutoRunning) return@setOnClickListener
 
             // ── 進入 auto 模式：收折選單，只留 autoBar + statusCard ──
-            isAutoRunning = true; autoRound = 0; pathOverlayWindow.hide()
+            isAutoRunning = true; autoRound = 0; clearPreview()
             isExpanded = false; isSettingsOpen = false
             menuScrollView.visibility = View.GONE
             settingsPanel.visibility  = View.GONE
@@ -239,27 +263,48 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                     val bitmap = ScreenCaptureService.instance?.captureSnapshot() ?: break
                     updateStatus(Phase.ANALYZE, round = autoRound)
                     updateStatus(Phase.COMPUTE, round = autoRound)
-                    val res = try {
-                        computePathFromBitmap(bitmap, sX, sY, oS)
+                    val outcome = try {
+                        computeCandidates(bitmap, sX, sY, oS)
                     } catch (e: Throwable) {
                         updateStatus(Phase.ERROR, round = autoRound, note = e.javaClass.simpleName); break
                     }
-                    if (res == null) { updateStatus(Phase.NO_PATH, round = autoRound); break }
-                    val isFallback   = res.second < 0
-                    val trueCombo    = if (isFallback) -res.second else res.second
-                    val path         = res.first
-                    val gesturePhase = if (isFallback) Phase.FALLBACK else Phase.GESTURE
-                    updateStatus(gesturePhase, combo = trueCombo, steps = path.size, round = autoRound,
-                        note = if (isFallback) "ML未就緒" else "")
-                    delay(200)
-                    // startY 已是真實螢幕像素座標（含狀態列），dispatchGesture 同為螢幕座標，毋需再補償
-                    val adjustedPath = path
-                    val actualSteps  = (path.size - 1).coerceAtLeast(1)
-                    val dur = (actualSteps.toLong() * currentGestureMs / currentSteps.toLong()).coerceAtLeast(200L)
-                    isGestureRunning = true
-                    val ok = accessibilityService.performOrbSwipe(adjustedPath, dur)
-                    isGestureRunning = false
-                    if (!ok) { updateStatus(Phase.ERROR, round = autoRound, note = "手勢失敗"); break }
+                    // 只有通過精確驗證（含形狀硬約束）的候選才會交付手勢
+                    val best = outcome.candidates.firstOrNull { it.executable }
+                    if (best == null) { updateStatus(Phase.NO_PATH, round = autoRound, note = outcome.message); break }
+                    val isFallback   = outcome.isFallback
+                    var trueCombo    = best.deterministicCombos
+                    var shownSteps   = best.stepCount
+                    if (autoConfirmFirst) {
+                        // 「自動模式先確認」：顯示候選，等使用者選路並按執行（■／✕ 停止自動）
+                        previewGeometry = outcome.geometry
+                        previewGoals = shapeGoals
+                        previewController.load(outcome.candidates, outcome.fingerprint, outcome.geometry.calibrationKey,
+                            outcome.shapeStatus, outcome.message)
+                        updateStatus(Phase.PREVIEW, combo = trueCombo, steps = shownSteps, round = autoRound, note = "等待確認")
+                        val decision = CompletableDeferred<Boolean>()
+                        autoConfirmDecision = decision
+                        val confirmed = try { decision.await() } finally { autoConfirmDecision = null }
+                        if (!confirmed || !isAutoRunning) { clearPreview(); break }
+                        previewController.state.selected?.let { trueCombo = it.deterministicCombos; shownSteps = it.stepCount }
+                        when (verifyAndExecuteSelected(autoRound)) {
+                            ExecResult.FAILED -> break
+                            ExecResult.REJECTED -> { clearPreview(); continue }   // 盤面已變：下一輪重新計算
+                            ExecResult.DONE -> Unit
+                        }
+                    } else {
+                        val path = outcome.geometry.toGesturePoints(best.pathCells)
+                        val gesturePhase = if (isFallback) Phase.FALLBACK else Phase.GESTURE
+                        updateStatus(gesturePhase, combo = trueCombo, steps = shownSteps, round = autoRound,
+                            note = if (isFallback) "ML未就緒" else "")
+                        delay(200)
+                        // startY 已是真實螢幕像素座標（含狀態列），dispatchGesture 同為螢幕座標，毋需再補償
+                        val actualSteps  = (path.size - 1).coerceAtLeast(1)
+                        val dur = (actualSteps.toLong() * currentGestureMs / currentSteps.toLong()).coerceAtLeast(200L)
+                        isGestureRunning = true
+                        val ok = accessibilityService.performOrbSwipe(path, dur)
+                        isGestureRunning = false
+                        if (!ok) { updateStatus(Phase.ERROR, round = autoRound, note = "手勢失敗"); break }
+                    }
 
                     // ── 輪間隔倒數 ──────────────────────────────────────
                     val waitEnd = System.currentTimeMillis() + currentRoundIntervalMs
@@ -267,7 +312,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                         val remaining = waitEnd - System.currentTimeMillis()
                         if (remaining <= 0L) break
                         val remSec = (remaining + 999L) / 1000L  // ceiling
-                        updateStatus(Phase.SUCCESS, combo = trueCombo, steps = path.size,
+                        updateStatus(Phase.SUCCESS, combo = trueCombo, steps = shownSteps,
                             round = autoRound, note = "下輪 ${remSec}s")
                         delay(minOf(500L, remaining))
                     }
@@ -287,11 +332,12 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }
 
         btnMacro.setOnClickListener {
+            clearPreview()
             if (macroListWindow == null) macroListWindow = MacroListWindow(context, accessibilityService, scope, prefs)
             macroListWindow?.show()
             toggleExpand()
         }
-        btnStop.setOnClickListener { isAutoRunning = false; updateStatus(Phase.STOPPED) }
+        btnStop.setOnClickListener { isAutoRunning = false; autoConfirmDecision?.complete(false); updateStatus(Phase.STOPPED) }
         btnSettings.setOnClickListener {
             isSettingsOpen = !isSettingsOpen
             settingsPanel.visibility = if (isSettingsOpen) View.VISIBLE else View.GONE
@@ -318,7 +364,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             ).apply { marginStart = (8 * dp).toInt() }
         }
         val btnAutoBarStop = OverlayUi.iconButton(context, "■", OverlayUi.DANGER, textSizeSp = 14f)
-        btnAutoBarStop.setOnClickListener { isAutoRunning = false }
+        btnAutoBarStop.setOnClickListener { isAutoRunning = false; autoConfirmDecision?.complete(false) }
         autoBar.addView(btnAutoBarStop)
 
         topRow.addView(toggleBtn)
@@ -453,6 +499,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             setOnCheckedChangeListener { _, checked ->
                 is8Way = checked
                 prefs.edit().putBoolean("is8Way", checked).apply()
+                clearPreview("移動規則已變更")
             }
         }
         settingsContent.addView(cb8Way)
@@ -524,6 +571,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             strategyMode = id
             prefs.edit().putInt("strategyMode", id).apply()
             mlAttrPanel.visibility = if (id == 3) View.VISIBLE else View.GONE
+            clearPreview("計算策略已變更")
             refreshWindowLayout()
         }
 
@@ -541,6 +589,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         fun saveGoals() {
             prefs.edit().putString(ShapeGoal.PREF_KEY, ShapeGoal.writeList(shapeGoals).toString()).apply()
             addGoal.isEnabled = shapeGoals.size < ShapeGoal.MAX_GOALS
+            clearPreview("版型條件已變更")
         }
         fun renderGoals() {
             goalRows.removeAllViews()
@@ -587,6 +636,64 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         settingsContent.addView(addGoal)
         saveGoals(); renderGoals()
 
+        // ── 版型求解器（只在有版型條件時生效；預設沿用原 Beam）──
+        settingsContent.addView(TextView(context).apply {
+            text = "版型求解器（Shape-Aware 會在找不到時回報不可行／逾時）"
+            textSize = 12f
+            setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
+            setPadding(0, (8 * dp).toInt(), 0, 0)
+        })
+        val rgSolver = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
+        SolverMode.entries.forEach { mode -> rgSolver.addView(makeRadio(100 + mode.ordinal, mode.label, solverMode == mode, 12f)) }
+        rgSolver.setOnCheckedChangeListener { _, id ->
+            solverMode = SolverMode.entries[id - 100]
+            prefs.edit().putInt("solverMode", solverMode.ordinal).apply()
+            clearPreview("求解器已變更")
+        }
+        settingsContent.addView(rgSolver)
+
+        // ── 路線預覽外觀（只影響畫面，不改變手勢座標）──
+        settingsContent.addView(OverlayUi.sectionLabel(context, "路線預覽"))
+        val rgTheme = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
+        PathPreviewTheme.entries.forEach { theme -> rgTheme.addView(makeRadio(200 + theme.ordinal, theme.label, previewTheme == theme, 12f)) }
+        rgTheme.setOnCheckedChangeListener { _, id ->
+            previewTheme = PathPreviewTheme.entries[id - 200]
+            prefs.edit().putInt("previewTheme", previewTheme.ordinal).apply()
+            renderPreview(previewController.state)
+        }
+        settingsContent.addView(HorizontalScrollView(context).apply { addView(rgTheme) })
+        val rgColor = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
+        PathColorMode.entries.forEach { mode -> rgColor.addView(makeRadio(300 + mode.ordinal, "配色：${mode.label}", previewColorMode == mode, 12f)) }
+        rgColor.setOnCheckedChangeListener { _, id ->
+            previewColorMode = PathColorMode.entries[id - 300]
+            prefs.edit().putInt("previewColorMode", previewColorMode.ordinal).apply()
+            renderPreview(previewController.state)
+        }
+        settingsContent.addView(rgColor)
+        settingsContent.addView(CheckBox(context).apply {
+            text = "顯示步序數字"
+            setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+            textSize = 13f
+            buttonTintList = accentTint
+            isChecked = previewShowSteps
+            setOnCheckedChangeListener { _, checked ->
+                previewShowSteps = checked
+                prefs.edit().putBoolean("previewShowSteps", checked).apply()
+                renderPreview(previewController.state)
+            }
+        })
+        settingsContent.addView(CheckBox(context).apply {
+            text = "自動模式每輪先確認路線（選路後按執行）"
+            setTextColor(Color.parseColor(OverlayUi.TEXT_HI))
+            textSize = 13f
+            buttonTintList = accentTint
+            isChecked = autoConfirmFirst
+            setOnCheckedChangeListener { _, checked ->
+                autoConfirmFirst = checked
+                prefs.edit().putBoolean("autoConfirmFirst", checked).apply()
+            }
+        })
+
         // ── 起手點位置 ───────────────────────────────────────────
         settingsContent.addView(OverlayUi.sectionLabel(context, "起手點位置"))
         val rgStart = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
@@ -611,13 +718,13 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         }
         // 🔍 辨識計算（原 top bar btnAnalyze，只計算顯示路徑，不執行）
         val btnAnalyzeSetting = OverlayUi.pillButton(context, "🔍 辨識計算").apply {
-            setOnClickListener { analyzeAndComputePath(autoExecute = false) }
+            setOnClickListener { val wasOpen = isSettingsOpen; closeSettings(); analyzeAndComputePath(autoExecute = false, settleMs = if (wasOpen) 350L else 0L) }
         }
-        // ▶ 執行路徑（原 top bar btnPlay，執行上次計算的路徑）
+        // ▶ 執行路徑：執行預覽列目前選中的路線（執行前重新驗證盤面）
         val btnPlaySetting = OverlayUi.pillButton(
             context, "▶ 執行路徑", textColor = OverlayUi.ACCENT, chipColor = OverlayUi.ACCENT_CHIP
         ).apply {
-            setOnClickListener { executeLastPath() }
+            setOnClickListener { closeSettings(); executeSelectedPath() }
         }
         val rowCalibActions = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -634,7 +741,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         val btnPre = OverlayUi.pillButton(context, "⊞ 調整辨識區域").apply {
             setOnClickListener {
                 if (previewWindow == null) previewWindow = BoardPreviewWindow(context) { collectInitialSamples() }
-                pathOverlayWindow.hide()
+                clearPreview("重新校正盤面")
                 previewWindow?.show()
                 toggleExpand()
             }
@@ -861,110 +968,264 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         if (loaded.isNotEmpty()) BoardAnalyzer.templates.putAll(loaded)
     }
 
+    /** 一次計算的結果：同一盤面（fingerprint）下的候選與形狀狀態。 */
+    private class ComputeOutcome(
+        val fingerprint: String,
+        val geometry: BoardGeometry,
+        val candidates: List<PathCandidate>,
+        val isFallback: Boolean,
+        val shapeStatus: ShapeSolveStatus?,
+        val message: String
+    )
+
     /**
-     * 核心計算（suspend）：給定已截好的 bitmap，辨識盤面並計算路徑。
-     * 回傳 Pair(path, combo)，combo < 0 表示 ML 降級（trueCombo = -combo）。
-     * 路徑為空時回傳 null。
+     * 核心計算（suspend）：給定已截好的 bitmap，辨識盤面並產生 Top-K 候選。
+     * 一般／平鋪／昇華／ML 仍走原本的求解入口；只有選擇 Shape-Aware 且有版型條件時改用新求解器。
      * bitmap 在此函式內部回收。
      */
-    private suspend fun computePathFromBitmap(
-        bitmap: Bitmap, sX: Int, sY: Int, oS: Int
-    ): Pair<List<Pair<Float, Float>>, Int>? = withContext(Dispatchers.Default) {
+    private suspend fun computeCandidates(bitmap: Bitmap, sX: Int, sY: Int, oS: Int): ComputeOutcome = withContext(Dispatchers.Default) {
         val analyzer = BoardAnalyzer()
-        val board    = analyzer.analyzeBoard(bitmap, sX, sY, oS)
+        val board = analyzer.analyzeBoard(bitmap, sX, sY, oS)
+        if (!bitmap.isRecycled) bitmap.recycle()
+        val fingerprint = PathReplay.fingerprint(board)
+        val geometry = BoardGeometry(sX.toFloat(), sY.toFloat(), oS.toFloat())
         val goals = shapeGoals
-        val result: Pair<List<Pair<Float, Float>>, Int> = if (strategyMode == 3 && goals.isEmpty()) {
-            val ml = getOrCreateMLPlanner()
-            if (ml != null) {
-                analyzer.calculateMLPath(
-                    board = board, orbSize = oS.toFloat(),
-                    startX = sX.toFloat(), startY = sY.toFloat(),
-                    mlPlanner = ml, steps = currentSteps, startMode = startMode
-                )
-            } else {
-                val fb = analyzer.calculateOptimalPath(
-                    board = board, orbSize = oS.toFloat(),
-                    startX = sX.toFloat(), startY = sY.toFloat(),
-                    is8Way = is8Way, strategyMode = 0,
-                    startMode = startMode, steps = currentSteps,
-                    beamWidth = beamWidth
-                )
-                Pair(fb.first, -fb.second.coerceAtLeast(1))
+        if (board.any { row -> row.any { it == BoardAnalyzer.OrbType.UNKNOWN } }) {
+            return@withContext ComputeOutcome(fingerprint, geometry, emptyList(), false,
+                if (goals.isEmpty()) null else ShapeSolveStatus.INFEASIBLE, "盤面有未辨識符石")
+        }
+        val verifier = goals.takeIf { it.isNotEmpty() }?.let { ShapeVerifier(it) }
+        when {
+            strategyMode == 3 && goals.isEmpty() -> {
+                val ml = getOrCreateMLPlanner()
+                if (ml != null) {
+                    val res = analyzer.calculateMLPath(board, oS.toFloat(), sX.toFloat(), sY.toFloat(), ml, currentSteps, startMode)
+                    // 舊 Pair API → PathCandidate adapter；ML 只會產生上下左右
+                    val candidate = CandidateFactory.fromPixelPath(board, res.first, geometry, false, null, CandidateSource.ML)
+                    ComputeOutcome(fingerprint, geometry, listOfNotNull(candidate?.takeIf { it.executable }), false, null, "")
+                } else {
+                    val list = analyzer.calculateOptimalCandidates(board, is8Way, 0, startMode, currentSteps, beamWidth)
+                        .map { it.copy(source = CandidateSource.ML_FALLBACK) }
+                    ComputeOutcome(fingerprint, geometry, list, true, null, "ML未就緒")
+                }
+            }
+            goals.isNotEmpty() && solverMode == SolverMode.SHAPE_AWARE -> {
+                val job = coroutineContext[Job]
+                val budget = SearchBudget(maxSteps = currentSteps, beamWidth = beamWidth, is8Way = is8Way,
+                    startMode = startMode, timeLimitMs = 3000L)
+                val result = analyzer.solveShapeAware(board, goals, budget, strategyMode) { job?.isActive == false }
+                ComputeOutcome(fingerprint, geometry, result.candidates, false, result.status,
+                    "${result.message}（${result.elapsedMs}ms）")
+            }
+            else -> {
+                val list = analyzer.calculateOptimalCandidates(board, is8Way, strategyMode, startMode,
+                    currentSteps, beamWidth, goals)
+                val status = when {
+                    verifier == null -> null
+                    list.isNotEmpty() -> ShapeSolveStatus.SOLVED
+                    verifier.infeasibleReason(board) != null -> ShapeSolveStatus.INFEASIBLE
+                    else -> ShapeSolveStatus.GOALS_UNSATISFIED
+                }
+                val message = verifier?.infeasibleReason(board) ?: status?.takeIf { it != ShapeSolveStatus.SOLVED }?.label ?: ""
+                ComputeOutcome(fingerprint, geometry, list, false, status, message)
+            }
+        }
+    }
+
+    private fun currentGeometry() = BoardGeometry(
+        prefs.getInt("startX", 0).toFloat(), prefs.getInt("startY", 1000).toFloat(), prefs.getInt("orbSize", 150).toFloat()
+    )
+
+    private fun closeSettings() {
+        if (!isSettingsOpen) return
+        isSettingsOpen = false
+        settingsPanel.visibility = View.GONE
+        statusCard.visibility = if (isExpanded) View.VISIBLE else View.GONE
+        refreshWindowLayout()
+    }
+
+    /** 清空預覽（新截圖、重新校正、取消、手勢結束、離開等情況）。 */
+    private fun clearPreview(reason: String = "") {
+        previewController.invalidate(reason)
+        previewGeometry = null
+        renderedCandidateId = null
+        isPreviewAnimating = false
+        pathOverlayWindow.hide()
+        previewBar.hide()
+    }
+
+    /** 依預覽狀態更新畫布與控制列；單一 overlay View，切換候選只換 model 再 invalidate。 */
+    private fun renderPreview(state: PathPreviewState) {
+        val geometry = previewGeometry
+        if (state.boardFingerprint == null || geometry == null) {
+            pathOverlayWindow.hide(); previewBar.hide(); renderedCandidateId = null; isPreviewAnimating = false
+            return
+        }
+        previewBar.render(state, previewGoals, boardTopY = geometry.startY.toInt())
+        val candidate = state.selected
+        if (candidate == null || !state.visible) {
+            pathOverlayWindow.hide(); renderedCandidateId = null; isPreviewAnimating = false
+            return
+        }
+        val style = PathRenderStyle(previewTheme, previewColorMode, previewShowSteps, showShapeMask = previewGoals.isNotEmpty())
+        if (renderedCandidateId != candidate.id || renderedStyle != style || !pathOverlayWindow.isShowing) {
+            val model = if (previewTheme == PathPreviewTheme.LEGACY_CLASSIC)
+                PathGeometryBuilder.build(candidate, geometry,
+                    lateralPx = LegacyPathStyle.OVERLAP_OFFSET_PX * LegacyPathStyle.scaleFor(geometry.orbSize))
+            else PathGeometryBuilder.build(candidate, geometry)
+            pathOverlayWindow.show(model, style)
+            renderedCandidateId = candidate.id
+            renderedStyle = style
+            isPreviewAnimating = false
+        }
+        if (state.playing) {
+            if (!isPreviewAnimating) {
+                isPreviewAnimating = true
+                val steps = candidate.stepCount.coerceAtLeast(1)
+                val duration = (steps.toLong() * currentGestureMs / currentSteps.toLong()).coerceAtLeast(800L)
+                pathOverlayWindow.play(duration, state.progress, onProgress = { lastAnimationProgress = it }) {
+                    isPreviewAnimating = false
+                    previewController.setProgress(1f)
+                }
             }
         } else {
-            analyzer.calculateOptimalPath(
-                board = board, orbSize = oS.toFloat(),
-                startX = sX.toFloat(), startY = sY.toFloat(),
-                is8Way = is8Way, strategyMode = strategyMode,
-                startMode = startMode, steps = currentSteps,
-                beamWidth = beamWidth, shapeGoals = goals
-            )
+            if (isPreviewAnimating) { pathOverlayWindow.stopAnimation(); isPreviewAnimating = false }
+            pathOverlayWindow.setProgress(state.progress)
         }
-        if (!bitmap.isRecycled) bitmap.recycle()
-        result.takeIf { it.first.isNotEmpty() }
+    }
+
+    /** 預演／暫停／繼續：純動畫，不發出任何無障礙手勢。 */
+    private fun togglePreviewPlayback() {
+        val state = previewController.state
+        when {
+            state.playing -> {
+                previewController.setProgress(lastAnimationProgress)
+                previewController.pause()
+            }
+            state.progress > 0f && state.progress < 1f -> previewController.resume()
+            else -> previewController.play()
+        }
     }
 
     /**
-     * 擷取截圖 → 辨識盤面 → 計算路徑，結果存入 lastCalculatedResult。
-     * autoExecute = true 時，路徑計算完立即執行手勢（一鍵模式）；
-     * autoExecute = false 時，只顯示路徑疊層供確認（分步模式）。
+     * 擷取截圖 → 辨識盤面 → 產生候選。
+     * autoExecute = true（一鍵模式）：立即執行第一條可執行候選，沿用原本時序；
+     * autoExecute = false：顯示路線預覽與控制列，由使用者選路、預演後再執行。
      */
-    private fun analyzeAndComputePath(autoExecute: Boolean = false) {
-        val bitmap = ScreenCaptureService.instance?.captureSnapshot()
-        if (bitmap == null) { Toast.makeText(context, "擷取畫面失敗", Toast.LENGTH_SHORT).show(); return }
+    private fun analyzeAndComputePath(autoExecute: Boolean = false, settleMs: Long = 0L) {
+        if (isGestureRunning) return
         val sX = prefs.getInt("startX", 0)
         val sY = prefs.getInt("startY", 1000)
         val oS = prefs.getInt("orbSize", 150)
+        val hadPreview = pathOverlayWindow.isShowing || previewBar.isShowing
+        clearPreview()
         tryLoadTemplates()
-        updateStatus(Phase.ANALYZE)
         scope.launch {
+            // 先移除舊路線再截圖，避免把畫線拍進辨識畫面
+            // 設定面板等全螢幕視窗收起後也要等一個繪製週期，否則會把面板拍進盤面
+            val settle = maxOf(settleMs, if (hadPreview) 200L else 0L)
+            if (settle > 0) delay(settle)
+            val bitmap = ScreenCaptureService.instance?.captureSnapshot()
+            if (bitmap == null) { Toast.makeText(context, "擷取畫面失敗", Toast.LENGTH_SHORT).show(); return@launch }
             try {
+                updateStatus(Phase.ANALYZE)
                 updateStatus(Phase.COMPUTE)
-                val res = computePathFromBitmap(bitmap, sX, sY, oS)
-                if (res == null) {
-                    lastCalculatedResult = null; pathOverlayWindow.hide(); updateStatus(Phase.NO_PATH)
+                val outcome = computeCandidates(bitmap, sX, sY, oS)
+                val best = outcome.candidates.firstOrNull { it.executable }
+                val phase = if (outcome.isFallback) Phase.FALLBACK else Phase.SUCCESS
+                if (autoExecute) {
+                    if (best == null) { updateStatus(Phase.NO_PATH, note = outcome.message); return@launch }
+                    updateStatus(phase, combo = best.deterministicCombos, steps = best.stepCount, note = outcome.message)
+                    isGestureRunning = true
+                    performCandidate(best, outcome.geometry)
                 } else {
-                    val isFallback = res.second < 0
-                    val trueCombo  = if (isFallback) -res.second else res.second
-                    val displayRes = if (isFallback) Pair(res.first, trueCombo) else res
-                    lastCalculatedResult = displayRes
-                    val phase = if (isFallback) Phase.FALLBACK else Phase.SUCCESS
-                    val note  = if (isFallback) "ML未就緒" else ""
-                    if (autoExecute) {
-                        updateStatus(phase, combo = trueCombo, steps = displayRes.first.size, note = note)
-                        executeLastPath()
-                    } else {
-                        pathOverlayWindow.show(displayRes.first)
-                        updateStatus(phase, combo = trueCombo, steps = displayRes.first.size, note = note)
-                    }
+                    previewGeometry = outcome.geometry
+                    previewGoals = shapeGoals
+                    previewController.load(outcome.candidates, outcome.fingerprint, outcome.geometry.calibrationKey,
+                        outcome.shapeStatus, outcome.message)
+                    if (best == null) updateStatus(Phase.NO_PATH, note = outcome.message)
+                    else updateStatus(phase, combo = best.deterministicCombos, steps = best.stepCount,
+                        note = if (outcome.candidates.size > 1) "${outcome.candidates.size} 條候選" else outcome.message)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) { updateStatus(Phase.ERROR, note = e.javaClass.simpleName) }
         }
     }
 
-    /** 執行上次計算的路徑；若無路徑則提示。 */
-    private fun executeLastPath() {
+    private enum class ExecResult { DONE, FAILED, REJECTED }
+
+    /**
+     * 執行預覽中選定的路線（按鈕入口）。自動模式等待確認時，改為通知自動迴圈「使用者已確認」。
+     */
+    private fun executeSelectedPath() {
         if (isGestureRunning) return
-        val result = lastCalculatedResult
-        if (result == null) {
-            Toast.makeText(context, "請先辨識計算路徑", Toast.LENGTH_SHORT).show()
+        autoConfirmDecision?.let { decision ->
+            if (previewController.state.selected?.executable == true) decision.complete(true)
+            else Toast.makeText(context, "目前路線不可執行", Toast.LENGTH_SHORT).show()
             return
         }
-        val (path, combo) = result
-        pathOverlayWindow.hide()
+        scope.launch { verifyAndExecuteSelected() }
+    }
+
+    /**
+     * 先做靜態檢查，再隱藏畫線、重新截圖辨識，盤面指紋與校正都一致才送出手勢；
+     * 任何不一致都讓預覽失效而不執行。
+     */
+    private suspend fun verifyAndExecuteSelected(round: Int = 0): ExecResult {
+        if (isGestureRunning) return ExecResult.REJECTED
+        val geometry = currentGeometry()
+        when (val pre = previewController.validateForExecution(geometry.calibrationKey, null)) {
+            is ExecutionCheck.Rejected -> {
+                Toast.makeText(context, pre.reason, Toast.LENGTH_SHORT).show()
+                if (previewController.state.isEmpty) updateStatus(Phase.NO_PATH, round = round, note = pre.reason)
+                return ExecResult.REJECTED
+            }
+            is ExecutionCheck.Ready -> Unit
+        }
         isGestureRunning = true
-        lastCalculatedResult = null
-        scope.launch {
-            delay(300)
-            updateStatus(Phase.GESTURE, combo = combo, steps = path.size)
-            // startY 已是真實螢幕像素座標（含狀態列），dispatchGesture 同為螢幕座標，毋需再補償
-            val adjustedPath = path
-            val actualSteps  = (path.size - 1).coerceAtLeast(1)
-            val dur = (actualSteps.toLong() * currentGestureMs / currentSteps.toLong()).coerceAtLeast(200L)
-            val success = accessibilityService.performOrbSwipe(adjustedPath, dur)
+        pathOverlayWindow.hide(); previewBar.hide(); renderedCandidateId = null; isPreviewAnimating = false
+        delay(250)
+        val bitmap = ScreenCaptureService.instance?.captureSnapshot()
+        if (bitmap == null) {
             isGestureRunning = false
-            if (success) updateStatus(Phase.SUCCESS, combo = combo, steps = path.size)
-            else         updateStatus(Phase.ERROR, note = "手勢失敗，請重試")
+            Toast.makeText(context, "擷取畫面失敗，未執行", Toast.LENGTH_SHORT).show()
+            renderPreview(previewController.state)
+            return ExecResult.REJECTED
+        }
+        val fingerprint = withContext(Dispatchers.Default) {
+            val board = BoardAnalyzer().analyzeBoard(bitmap, geometry.startX.toInt(), geometry.startY.toInt(), geometry.orbSize.toInt())
+            if (!bitmap.isRecycled) bitmap.recycle()
+            PathReplay.fingerprint(board)
+        }
+        return when (val check = previewController.validateForExecution(geometry.calibrationKey, fingerprint)) {
+            is ExecutionCheck.Rejected -> {
+                isGestureRunning = false
+                updateStatus(Phase.NO_PATH, round = round, note = check.reason)
+                renderPreview(previewController.state)
+                ExecResult.REJECTED
+            }
+            is ExecutionCheck.Ready -> {
+                clearPreview()
+                if (performCandidate(check.candidate, geometry, round)) ExecResult.DONE else ExecResult.FAILED
+            }
+        }
+    }
+
+    /** 送出手勢：座標只由格位路徑 + 校正換算，與預覽畫線的視覺偏移無關。呼叫前須已設定 isGestureRunning。 */
+    private suspend fun performCandidate(candidate: PathCandidate, geometry: BoardGeometry, round: Int = 0): Boolean {
+        val path = geometry.toGesturePoints(candidate.pathCells)
+        try {
+            delay(300)
+            updateStatus(Phase.GESTURE, combo = candidate.deterministicCombos, steps = candidate.stepCount, round = round)
+            val actualSteps = (path.size - 1).coerceAtLeast(1)
+            val dur = (actualSteps.toLong() * currentGestureMs / currentSteps.toLong()).coerceAtLeast(200L)
+            val success = accessibilityService.performOrbSwipe(path, dur)
+            if (success) updateStatus(Phase.SUCCESS, combo = candidate.deterministicCombos, steps = candidate.stepCount, round = round)
+            else updateStatus(Phase.ERROR, round = round, note = "手勢失敗，請重試")
+            return success
+        } finally {
+            isGestureRunning = false
         }
     }
 
@@ -972,7 +1233,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private fun doTemplateCalibration() {
         val bitmap = ScreenCaptureService.instance?.captureSnapshot()
         if (bitmap != null) {
-            pathOverlayWindow.hide()
+            clearPreview("重新建立樣板")
             recognitionOverlayWindow.hide()
             TemplateCalibrationWindow(context).show(bitmap)
         } else {
@@ -1004,7 +1265,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                     if (!bitmap.isRecycled) bitmap.recycle()
                     Pair(result, analyzer.lastFeatures)
                 }
-                pathOverlayWindow.hide()
+                clearPreview()
                 recognitionOverlayWindow.show(board, features, sX, sY, oS)
                 updateStatus(Phase.PREVIEW, note = "點格子指定正確屬性")
             } catch (e: Throwable) {
@@ -1036,7 +1297,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         previewWindow?.hide()
         macroListWindow?.hide()
         macroListWindow = null
-        pathOverlayWindow.hide()
+        clearPreview(); previewController.listener = null
         recognitionOverlayWindow.hide()
         if (::statusCard.isInitialized && statusCard.isAttachedToWindow) {
             windowManager.removeView(statusCard)
