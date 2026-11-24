@@ -408,7 +408,7 @@ class MacroListWindow(
         val beamWidth = prefs.getInt("beamWidth", 200)
         val gestureMs = prefs.getLong("gestureMs", 5000L)
         val startMode = prefs.getInt("startMode", 0)
-        val moveConstraint = MoveConstraint.fromPrefs(prefs)  // 與懸浮窗共用起點／終點設定
+        val moveConstraint = MoveConstraint.NONE  // 起終點改為每回合在盤面指定，巨集自動盤不套用
 
         for ((index, action) in macro.actions.withIndex()) {
             if (stopRequested) return false

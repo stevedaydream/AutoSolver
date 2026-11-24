@@ -16,6 +16,23 @@ class PathCandidateTest {
         assertEquals(listOf(3, 1, 7, 2), PathReplay.directionsOf(listOf(0, 1, 7, 14, 13)))
     }
 
+    @Test fun fingerprintToleratesAFewUnknownCellsOnly() {
+        val board = BoardSimulatorTest.cascadeBoard()
+        val expected = PathReplay.fingerprint(board)
+        assertTrue(PathReplay.fingerprintMatches(expected, expected))
+        // 特效動畫讓 2 格辨識不到：仍視為同一盤面
+        val flicker = board.map { it.clone() }.toTypedArray().also {
+            it[0][5] = BoardAnalyzer.OrbType.UNKNOWN; it[2][5] = BoardAnalyzer.OrbType.UNKNOWN
+        }
+        assertTrue(PathReplay.fingerprintMatches(expected, PathReplay.fingerprint(flicker)))
+        // 任一已辨識格不同就不相符
+        assertFalse(PathReplay.fingerprintMatches(expected, PathReplay.fingerprint(PathReplay.replay(board, listOf(0, 1)))))
+        // 太多格辨識不到（可能已離開盤面）也不相符
+        val mostlyUnknown = Array(5) { Array(6) { BoardAnalyzer.OrbType.UNKNOWN } }
+        assertFalse(PathReplay.fingerprintMatches(expected, PathReplay.fingerprint(mostlyUnknown)))
+        assertFalse(PathReplay.fingerprintMatches(expected, expected.dropLast(1)))
+    }
+
     @Test fun stateKeyIsExactAndIncludesFingerPosition() {
         val board = BoardSimulatorTest.cascadeBoard()
         assertEquals(StateKey.of(board, 3, 2), StateKey.of(board.map { it.clone() }.toTypedArray(), 3, 2))

@@ -96,7 +96,8 @@ class PathPreviewController(private val maxCandidates: Int = 5) {
         }
         if (state.calibrationKey != currentCalibrationKey) return reject("盤面校正已變更，請重新計算")
         if (candidate.boardFingerprint != state.boardFingerprint) return reject("候選與盤面不一致")
-        if (currentFingerprint != null && currentFingerprint != candidate.boardFingerprint) return reject("盤面已變更，請重新計算")
+        if (currentFingerprint != null && !PathReplay.fingerprintMatches(candidate.boardFingerprint, currentFingerprint))
+            return reject("盤面已變更，請重新計算")
         if (!PathReplay.isLegal(candidate.pathCells, candidate.is8Way)) return reject("路線不合法")
         return ExecutionCheck.Ready(candidate)
     }

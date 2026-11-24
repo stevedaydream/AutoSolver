@@ -82,6 +82,21 @@ internal object PathReplay {
         return out
     }
 
+    /**
+     * 執行前比對盤面：目前畫面中未辨識（特效動畫）的格子視為相符，其餘每格都要一致。
+     * 未辨識格超過 [maxUnknown] 視為不相符（可能已離開盤面畫面）。
+     */
+    fun fingerprintMatches(expected: String, actual: String, maxUnknown: Int = 4): Boolean {
+        if (expected.length != actual.length) return false
+        val unknown = BoardAnalyzer.OrbType.UNKNOWN.ordinal.toString()[0]
+        var unknownCount = 0
+        for (i in expected.indices) {
+            if (actual[i] == unknown) { unknownCount++; continue }
+            if (actual[i] != expected[i]) return false
+        }
+        return unknownCount <= maxUnknown
+    }
+
     /** 盤面指紋：每格屬性序號（UNKNOWN = 6），供預覽失效判斷。 */
     fun fingerprint(board: Array<Array<OrbType>>): String {
         val sb = StringBuilder(board.size * (board.firstOrNull()?.size ?: 0))

@@ -1,7 +1,5 @@
 package com.stevedaydream.autodora
 
-import android.content.SharedPreferences
-
 /**
  * 轉珠的起點／終點限制（row-major 格位 0..29；-1 表示不限）。
  * 終點限制：放手時手指必須停在 [endCell]。
@@ -23,14 +21,8 @@ data class MoveConstraint(val startCell: Int = -1, val endCell: Int = -1) {
     companion object {
         const val CELLS = 30
         val NONE = MoveConstraint()
-        const val PREF_START = "startCell"
-        const val PREF_END = "endCell"
-
-        /** 讀取設定；舊版只有 startMode（左下／右下）時自動換算成對應格位。 */
-        fun fromPrefs(prefs: SharedPreferences): MoveConstraint {
-            val legacyStart = when (prefs.getInt("startMode", 0)) { 1 -> 24; 2 -> 29; else -> -1 }
-            return MoveConstraint(prefs.getInt(PREF_START, legacyStart), prefs.getInt(PREF_END, -1))
-        }
+        /** 舊版（v14）存在設定裡的起終點；改為每回合在盤面上指定後不再使用。 */
+        val LEGACY_PREF_KEYS = listOf("startCell", "endCell")
 
         fun label(cell: Int): String = if (cell !in 0 until CELLS) "不限" else "第 ${cell / 6 + 1} 列第 ${cell % 6 + 1} 行"
     }
