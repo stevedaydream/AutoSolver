@@ -408,6 +408,7 @@ class MacroListWindow(
         val beamWidth = prefs.getInt("beamWidth", 200)
         val gestureMs = prefs.getLong("gestureMs", 5000L)
         val startMode = prefs.getInt("startMode", 0)
+        val moveConstraint = MoveConstraint.fromPrefs(prefs)  // 與懸浮窗共用起點／終點設定
 
         for ((index, action) in macro.actions.withIndex()) {
             if (stopRequested) return false
@@ -446,7 +447,7 @@ class MacroListWindow(
                             val result = BoardAnalyzer().solveShapeAware(
                                 board, action.shapeGoals,
                                 SearchBudget(maxSteps = action.steps, beamWidth = beamWidth, is8Way = is8Way,
-                                    startMode = startMode, timeLimitMs = 3000L),
+                                    startMode = startMode, timeLimitMs = 3000L, constraint = moveConstraint),
                                 action.strategyMode
                             ) { stopRequested }
                             val geometry = BoardGeometry(sX.toFloat(), sY.toFloat(), oS.toFloat())
@@ -461,7 +462,8 @@ class MacroListWindow(
                             startMode = startMode,
                             steps = action.steps,
                             beamWidth = beamWidth,
-                            shapeGoals = action.shapeGoals
+                            shapeGoals = action.shapeGoals,
+                            constraint = moveConstraint
                         )
                     }
                     if (path.isEmpty()) return false
@@ -495,7 +497,8 @@ class MacroListWindow(
                                 strategyMode = 0,
                                 startMode = startMode,
                                 steps = 35,
-                                beamWidth = beamWidth
+                                beamWidth = beamWidth,
+                                constraint = moveConstraint
                             )
                         }
                         if (path.isNotEmpty()) {

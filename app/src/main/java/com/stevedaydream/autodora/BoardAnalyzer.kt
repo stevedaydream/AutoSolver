@@ -42,6 +42,9 @@ class BoardAnalyzer {
         var r = 0; var c = 0
         var score = 0; var combos = 0
         internal var shapes = ShapeEvaluation(0, 0)
+        /** 首批全消：剩餘顆數與引導成本（越小越好）。 */
+        internal var clearLeft = 0
+        internal var clearCost = 0
 
         fun copyBoard(source: Array<Array<OrbType>>) {
             for (i in 0 until 5) for (j in 0 until 6) this.board[i][j] = source[i][j]
@@ -55,6 +58,7 @@ class BoardAnalyzer {
             this.r = other.r; this.c = other.c
             this.score = other.score; this.combos = other.combos
             this.shapes = other.shapes
+            this.clearLeft = other.clearLeft; this.clearCost = other.clearCost
         }
     }
 
@@ -439,9 +443,12 @@ class BoardAnalyzer {
         startMode: Int = 0,    // 0: 全盤, 1: 左下, 2: 右下
         steps: Int = 35,
         beamWidth: Int = 200,
-        shapeGoals: List<ShapeGoal> = emptyList()
+        shapeGoals: List<ShapeGoal> = emptyList(),
+        constraint: MoveConstraint = MoveConstraint.NONE,
+        clearTypes: Set<OrbType> = emptySet()
     ): Pair<List<Pair<Float, Float>>, Int> {
-        val best = runBeam(board, is8Way, strategyMode, startMode, steps, beamWidth, shapeGoals, poolCapacity = 0)
+        val best = runBeam(board, is8Way, strategyMode, startMode, steps, beamWidth, shapeGoals, poolCapacity = 0,
+            constraint = constraint, clearTypes = clearTypes)
             .firstOrNull() ?: return Pair(emptyList(), 0)
         val pixelPath = mutableListOf<Pair<Float, Float>>()
         for (i in 0 until best.pathLen) {
@@ -462,29 +469,35 @@ class BoardAnalyzer {
         steps: Int = 35,
         beamWidth: Int = 200,
         shapeGoals: List<ShapeGoal> = emptyList(),
-        maxCandidates: Int = 5
+        maxCandidates: Int = 5,
+        constraint: MoveConstraint = MoveConstraint.NONE,
+        clearTypes: Set<OrbType> = emptySet()
     ): List<PathCandidate> {
         val nodes = runBeam(board, is8Way, strategyMode, startMode, steps, beamWidth, shapeGoals,
-            poolCapacity = (maxCandidates * 6).coerceAtLeast(1))
+            poolCapacity = (maxCandidates * 6).coerceAtLeast(1), constraint = constraint, clearTypes = clearTypes)
         val verifier = shapeGoals.takeIf { it.isNotEmpty() }?.let { ShapeVerifier(it) }
         val simulator = BoardSimulator(5, 6)
         val built = nodes.mapNotNull { node ->
             val cells = (0 until node.pathLen).map { node.pathR[it] * 6 + node.pathC[it] }
-            CandidateFactory.build(board, cells, is8Way, verifier, CandidateSource.BEAM, node.score.toLong(), simulator)
-        }.filter { it.executable }
-        return CandidateFactory.dedupe(built).take(maxCandidates.coerceAtLeast(1))
+            CandidateFactory.build(board, cells, is8Way, verifier, CandidateSource.BEAM, node.score.toLong(), simulator, clearTypes)
+        }.filter { it.executable && constraint.endOk(it.pathCells.last()) }
+        // 有首批全消條件時，達成者之間以 Combo 最高為優先
+        val ordered = if (clearTypes.isEmpty()) built else built.sortedByDescending { it.deterministicCombos }
+        return CandidateFactory.dedupe(ordered).take(maxCandidates.coerceAtLeast(1))
     }
 
     /** 提供給 Shape-Aware 求解器的計分；Combo 與 firstWave 來自同一次 resolve，平鋪評分才會讀到正確的首消標記。 */
-    internal fun scoreBoard(board: Array<Array<OrbType>>, strategyMode: Int): BoardScore {
+    internal fun scoreBoard(board: Array<Array<OrbType>>, strategyMode: Int, clearTypes: Set<OrbType> = emptySet()): BoardScore {
         val combos = calculateCombosWithCascade(board)
         val firstWave = firstWaveCombos
+        val clearLeft = ClearGoal.remaining(board, matchBoard, clearTypes)
+        val clearCost = ClearGoal.cost(board, matchBoard, clearTypes)
         val score = when (strategyMode) {
             1 -> evaluateBottomUp(board, combos)
             2 -> evaluateAmelioration(board, combos)
             else -> evaluateStandard(board, combos)
         }
-        return BoardScore(combos, firstWave, score)
+        return BoardScore(combos, firstWave, score, clearLeft, clearCost)
     }
 
     /** SolverMode.SHAPE_AWARE 入口：形狀硬約束優先，回傳明確狀態。 */
@@ -494,7 +507,7 @@ class BoardAnalyzer {
         budget: SearchBudget,
         strategyMode: Int = 0,
         cancelled: () -> Boolean = { false }
-    ): ShapeSolveResult = ShapeAwareSolver(shapeGoals, { scoreBoard(it, strategyMode) }, cancelled = cancelled).solve(board, budget)
+    ): ShapeSolveResult = ShapeAwareSolver(shapeGoals, { scoreBoard(it, strategyMode, budget.clearTypes) }, cancelled = cancelled).solve(board, budget)
 
     /**
      * Beam 核心。回傳依原排序（分數 → Combo → 較短）排列的節點：第一個即全域最佳（與舊版相同）。
@@ -508,9 +521,13 @@ class BoardAnalyzer {
         steps: Int,
         beamWidth: Int,
         shapeGoals: List<ShapeGoal>,
-        poolCapacity: Int
+        poolCapacity: Int,
+        constraint: MoveConstraint = MoveConstraint.NONE,
+        clearTypes: Set<OrbType> = emptySet()
     ): List<SearchNode> {
         if (!isCompleteBoard(board)) return emptyList()
+        if (ClearGoal.infeasibleReason(board, clearTypes) != null) return emptyList()
+        val requireClear = clearTypes.isNotEmpty()
         val shapeEvaluator = shapeGoals.takeIf { it.isNotEmpty() }?.let { ShapeEvaluator(it) }
         if (shapeEvaluator != null && !shapeEvaluator.canAttempt(board)) return emptyList()
         val maxSteps = steps.coerceIn(5, 60)
@@ -519,17 +536,27 @@ class BoardAnalyzer {
 
         val nextNodes = Array(beam * 8) { SearchNode(maxSteps) }
         val currentNodes = Array(beam) { SearchNode(maxSteps) }
-        val selector = BeamSelector(beam, if (shapeEvaluator == null) null else { a, b ->
+        // 有硬條件時的引導順序：形狀達成數 → （形狀未全達成時）形狀潛力 → 分數 − 全消剩餘成本
+        val selector = BeamSelector(beam, if (shapeEvaluator == null && !requireClear) null else { a, b ->
             val left = nextNodes[a]
             val right = nextNodes[b]
             val satisfied = left.shapes.satisfied.compareTo(right.shapes.satisfied)
             val potential = left.shapes.potential.compareTo(right.shapes.potential)
+            // 全消剩餘以分數折抵（每顆約一個 Combo），讓搜尋在接近全消時仍能繼續堆 Combo
+            val blended = (left.score.toLong() - left.clearCost.toLong() * ClearGoal.guideWeight)
+                .compareTo(right.score.toLong() - right.clearCost.toLong() * ClearGoal.guideWeight)
             when {
                 satisfied != 0 -> satisfied
-                potential != 0 -> potential
-                else -> left.score.compareTo(right.score)
+                potential != 0 && shapeEvaluator != null && left.shapes.satisfied < shapeGoals.size -> potential
+                else -> blended
             }
         }) { nextNodes[it].score }
+        /** 達成條件的節點之間：有全消條件時 Combo 優先，否則沿用原本的分數優先。 */
+        fun better(n: SearchNode, best: SearchNode): Boolean = if (requireClear)
+            n.combos > best.combos || (n.combos == best.combos && n.score > best.score) ||
+                (n.combos == best.combos && n.score == best.score && n.pathLen < best.pathLen)
+        else n.score > best.score || (n.score == best.score && n.combos > best.combos) ||
+            (n.score == best.score && n.combos == best.combos && n.pathLen < best.pathLen)
         val globalBestNode = SearchNode(maxSteps)
         globalBestNode.combos = 0; globalBestNode.score = Int.MIN_VALUE
 
@@ -537,18 +564,16 @@ class BoardAnalyzer {
         val dirsC = if (is8Way) intArrayOf(0, 0, -1, 1, -1, 1, -1, 1) else intArrayOf(0, 0, -1, 1)
 
         // 起手點篩選
-        val startPoints = mutableListOf<Pair<Int, Int>>()
-        when (startMode) {
-            1 -> startPoints.add(Pair(4, 0)) // 左下角
-            2 -> startPoints.add(Pair(4, 5)) // 右下角
-            else -> {
-                for (r in 0 until 5) for (c in 0 until 6) startPoints.add(Pair(r, c))
-            }
-        }
+        // 指定起點時只從該格起手；否則沿用 startMode（全盤／左下／右下）
+        val startPoints = constraint.startCells(startMode).map { Pair(it / 6, it % 6) }
+        // 指定終點時，另外保留不論終點的高分節點，搜尋完再補走到終點
+        val anyEndPool = if (constraint.hasEnd) CandidatePool(16, maxSteps) else null
 
         // 共享種子池：所有起手點放進同一個 beam pool 全域競爭淘汰，
         // 讓搜尋資源集中在有潛力的分支，而非每個起手點各跑一輪
         val initCombos = calculateCombosWithCascade(board)
+        val initClearLeft = ClearGoal.remaining(board, matchBoard, clearTypes)
+        val initClearCost = ClearGoal.cost(board, matchBoard, clearTypes)
         val initScore = when (strategyMode) {
             1 -> evaluateBottomUp(board, initCombos)
             2 -> evaluateAmelioration(board, initCombos)
@@ -562,6 +587,7 @@ class BoardAnalyzer {
             n.r = startPt.first; n.c = startPt.second
             n.pathLen = 1; n.pathR[0] = startPt.first; n.pathC[0] = startPt.second
             n.combos = initCombos; n.score = initScore
+            n.clearLeft = initClearLeft; n.clearCost = initClearCost
         }
 
         for (s in 0 until maxSteps) {
@@ -584,6 +610,9 @@ class BoardAnalyzer {
 
                         // 包含既有符石落下形成的連鎖，不預測隨機新珠
                         nextNode.combos = calculateCombosWithCascade(nextNode.board)
+                        // 必須緊接在 resolve 之後讀取首批消除標記
+                        nextNode.clearLeft = ClearGoal.remaining(nextNode.board, matchBoard, clearTypes)
+                        nextNode.clearCost = ClearGoal.cost(nextNode.board, matchBoard, clearTypes)
                         val baseScore = when(strategyMode) {
                             1 -> evaluateBottomUp(nextNode.board, nextNode.combos)
                             2 -> evaluateAmelioration(nextNode.board, nextNode.combos)
@@ -593,12 +622,15 @@ class BoardAnalyzer {
                         if (shapeEvaluator != null) nextNode.shapes = shapeEvaluator.evaluate(nextNode.board)
 
                         // 優先順序：① 分數更高（策略加成優先） ② combo 更多 ③ 步數更少
-                        val isBetter = nextNode.score > globalBestNode.score ||
-                            (nextNode.score == globalBestNode.score && nextNode.combos > globalBestNode.combos) ||
-                            (nextNode.score == globalBestNode.score && nextNode.combos == globalBestNode.combos && nextNode.pathLen < globalBestNode.pathLen)
-                        val shapesDone = nextNode.shapes.satisfied == shapeGoals.size
-                        if (isBetter && shapesDone) globalBestNode.copyFrom(nextNode)
-                        if (pool != null && shapesDone && nextNode.combos > 0) pool.offer(nextNode)
+                        val isBetter = better(nextNode, globalBestNode)
+                        val shapesDone = nextNode.shapes.satisfied == shapeGoals.size && nextNode.clearLeft == 0
+                        val endOk = constraint.endOk(nr * 6 + nc)
+                        if (isBetter && shapesDone && endOk) globalBestNode.copyFrom(nextNode)
+                        if (pool != null && shapesDone && endOk && nextNode.combos > 0) pool.offer(nextNode)
+                        // 有版型條件時，只保留手指不在已完成形狀上的節點（補走會帶走手上的珠子）
+                        if (anyEndPool != null && !endOk && (shapeEvaluator == null ||
+                                (shapesDone && shapeEvaluator.verifier.verify(nextNode.board).usedMask and (1L shl (nr * 6 + nc)) == 0L)))
+                            anyEndPool.offer(nextNode)
                     }
                 }
             }
@@ -606,6 +638,39 @@ class BoardAnalyzer {
             currentNodesCount = 0
             for (index in selector.select(nextNodesCount)) {
                 currentNodes[currentNodesCount++].copyFrom(nextNodes[index])
+            }
+        }
+
+        // ── 指定終點：把高分但停在別處的路線，以最短補走延伸到終點後重新評分 ──
+        if (anyEndPool != null) {
+            val extended = SearchNode(maxSteps)
+            for (seed in anyEndPool.sorted()) {
+                val from = seed.pathR[seed.pathLen - 1] * 6 + seed.pathC[seed.pathLen - 1]
+                val previous = if (seed.pathLen >= 2) seed.pathR[seed.pathLen - 2] * 6 + seed.pathC[seed.pathLen - 2] else -1
+                val walk = PathReplay.walkTo(from, previous, constraint.endCell, is8Way, maxSteps - (seed.pathLen - 1)) ?: continue
+                extended.copyFrom(seed)
+                for (cell in walk) {
+                    val nr = cell / 6; val nc = cell % 6
+                    val temp = extended.board[extended.r][extended.c]
+                    extended.board[extended.r][extended.c] = extended.board[nr][nc]
+                    extended.board[nr][nc] = temp
+                    extended.r = nr; extended.c = nc
+                    extended.pathR[extended.pathLen] = nr; extended.pathC[extended.pathLen] = nc
+                    extended.pathLen++
+                }
+                extended.combos = calculateCombosWithCascade(extended.board)
+                extended.clearLeft = ClearGoal.remaining(extended.board, matchBoard, clearTypes)
+                val baseScore = when (strategyMode) {
+                    1 -> evaluateBottomUp(extended.board, extended.combos)
+                    2 -> evaluateAmelioration(extended.board, extended.combos)
+                    else -> evaluateStandard(extended.board, extended.combos)
+                }
+                extended.score = baseScore - extended.pathLen * 15
+                if (shapeEvaluator != null) extended.shapes = shapeEvaluator.evaluate(extended.board)
+                if (extended.shapes.satisfied != shapeGoals.size || extended.combos <= 0 || extended.clearLeft != 0) continue
+                val isBetter = better(extended, globalBestNode)
+                if (isBetter) globalBestNode.copyFrom(extended)
+                pool?.offer(extended)
             }
         }
 
@@ -665,9 +730,10 @@ class BoardAnalyzer {
         startY: Float,
         mlPlanner: MLOrbPlanner,
         steps: Int = 35,
-        startMode: Int = 0
+        startMode: Int = 0,
+        constraint: MoveConstraint = MoveConstraint.NONE
     ): Pair<List<Pair<Float, Float>>, Int> = calculatePolicyPath(
-        board, orbSize, startX, startY, steps, startMode, mlPlanner::planPath
+        board, orbSize, startX, startY, steps, startMode, constraint, mlPlanner::planPath
     )
 
     internal fun calculatePolicyPath(
@@ -677,13 +743,15 @@ class BoardAnalyzer {
         startY: Float,
         steps: Int,
         startMode: Int,
+        constraint: MoveConstraint = MoveConstraint.NONE,
         planPath: (Array<Array<OrbType>>, Int, Int, Int) -> List<Pair<Int, Int>>
     ): Pair<List<Pair<Float, Float>>, Int> {
         if (!isCompleteBoard(board)) return Pair(emptyList(), 0)
         val maxSteps = steps.coerceIn(5, 60)
 
         // Candidate starting positions based on startMode
-        val candidates: List<Pair<Int, Int>> = when (startMode) {
+        val candidates: List<Pair<Int, Int>> = if (constraint.hasStart) listOf(Pair(constraint.startCell / 6, constraint.startCell % 6))
+        else when (startMode) {
             1 -> listOf(Pair(4, 0))
             2 -> listOf(Pair(4, 5))
             else -> listOf(
@@ -695,8 +763,15 @@ class BoardAnalyzer {
         var bestCombos = 0
 
         for ((startRow, startCol) in candidates) {
-            val nodePath = planPath(board, maxSteps, startRow, startCol)
+            var nodePath = planPath(board, maxSteps, startRow, startCol)
             if (nodePath.size <= 1) continue
+            // 指定終點：模型路線停在別處時補走到終點（ML 只走上下左右）
+            if (constraint.hasEnd) {
+                val cells = nodePath.map { (r, c) -> r * 6 + c }
+                val walk = PathReplay.walkTo(cells.last(), cells.getOrElse(cells.size - 2) { -1 }, constraint.endCell,
+                    false, maxSteps - (cells.size - 1)) ?: continue
+                nodePath = nodePath + walk.map { it / 6 to it % 6 }
+            }
 
             // Simulate the board state after following this path
             val simBoard = Array(5) { r -> Array(6) { c -> board[r][c] } }

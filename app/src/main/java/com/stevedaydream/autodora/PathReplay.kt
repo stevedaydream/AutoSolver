@@ -48,6 +48,40 @@ internal object PathReplay {
         return out
     }
 
+    /**
+     * 從 [from]（上一步在 [previous]）走到 [target] 的補走路徑（不含 from）。
+     * 優先朝目標前進、不立即折返；最多 [maxSteps] 步，走不到回傳 null。用於「指定終點」時把好路線延伸到終點。
+     */
+    fun walkTo(from: Int, previous: Int, target: Int, is8Way: Boolean, maxSteps: Int,
+               rows: Int = ROWS, cols: Int = COLS): List<Int>? {
+        val out = ArrayList<Int>()
+        var cur = from
+        var prev = previous
+        val allowed = directionCount(is8Way)
+        fun dist(a: Int): Int {
+            val dr = kotlin.math.abs(a / cols - target / cols); val dc = kotlin.math.abs(a % cols - target % cols)
+            return if (is8Way) maxOf(dr, dc) else dr + dc
+        }
+        while (cur != target) {
+            if (out.size >= maxSteps) return null
+            var best = -1
+            var bestDist = Int.MAX_VALUE
+            for (d in 0 until allowed) {
+                val r = cur / cols + DIR_R[d]; val c = cur % cols + DIR_C[d]
+                if (r !in 0 until rows || c !in 0 until cols) continue
+                val next = r * cols + c
+                if (next == prev) continue
+                val nd = dist(next)
+                if (nd < bestDist) { bestDist = nd; best = next }
+            }
+            if (best < 0) return null
+            out.add(best)
+            prev = cur
+            cur = best
+        }
+        return out
+    }
+
     /** 盤面指紋：每格屬性序號（UNKNOWN = 6），供預覽失效判斷。 */
     fun fingerprint(board: Array<Array<OrbType>>): String {
         val sb = StringBuilder(board.size * (board.firstOrNull()?.size ?: 0))

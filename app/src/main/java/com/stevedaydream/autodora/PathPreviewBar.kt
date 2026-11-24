@@ -86,7 +86,8 @@ class PathPreviewBar(
     }
 
     /** @param boardTopY 盤面頂端螢幕座標：控制列放在盤面正上方，不遮珠子也不壓到懸浮選單。 */
-    fun render(state: PathPreviewState, goals: List<ShapeGoal>, boardTopY: Int? = null) {
+    fun render(state: PathPreviewState, goals: List<ShapeGoal>, boardTopY: Int? = null,
+               clearTypes: Set<BoardAnalyzer.OrbType> = emptySet()) {
         val view = root ?: build().also { root = it }
         title.text = state.label
         setEnabled(btnPrev, state.hasPrevious)
@@ -94,7 +95,8 @@ class PathPreviewBar(
         val selected = state.selected
         metrics.text = if (selected == null) state.message.ifEmpty { "沒有可執行的路線" } else
             "首消 ${selected.firstWaveCombos}C · 模擬 ${selected.deterministicCombos}C · ${selected.stepCount} 步"
-        val shapeText = shapeSummary(selected, goals, state)
+        val shapeText = listOf(shapeSummary(selected, goals, state), clearSummary(selected, clearTypes))
+            .filter { it.isNotEmpty() }.joinToString("\n")
         shapes.text = shapeText
         shapes.visibility = if (shapeText.isEmpty()) View.GONE else View.VISIBLE
         btnVisible.text = if (state.visible) "隱藏" else "顯示"
@@ -110,6 +112,14 @@ class PathPreviewBar(
         }
         if (!view.isAttachedToWindow) windowManager.addView(view, p)
         else if ((view.layoutParams as? WindowManager.LayoutParams)?.y != p.y) windowManager.updateViewLayout(view, p)
+    }
+
+    /** 首批全消：達成顯示 ✓，未達成顯示剩餘顆數。 */
+    private fun clearSummary(candidate: PathCandidate?, types: Set<BoardAnalyzer.OrbType>): String {
+        if (types.isEmpty()) return ""
+        val name = ClearGoal.describe(types)
+        if (candidate == null) return "首批全消 $name：未達成"
+        return if (candidate.clearVerified) "首批全消 $name ✓" else "首批全消 $name ✗（剩 ${candidate.clearRemaining} 顆）"
     }
 
     private fun shapeSummary(candidate: PathCandidate?, goals: List<ShapeGoal>, state: PathPreviewState): String {

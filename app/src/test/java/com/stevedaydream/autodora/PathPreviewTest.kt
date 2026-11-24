@@ -120,8 +120,19 @@ class PathPreviewTest {
         }
         assertEquals(gesture.first(), model.startX to model.startY)
         assertEquals(gesture.last(), model.endX to model.endY)
-        // 步序標籤：重複經過的格子只標一次
+        // 步序標籤：每格一個標籤（不互相覆蓋），但每一步都有編號；重複經過的格子合併成「1,5」
         assertEquals(model.stepLabels.size, model.stepLabels.map { it.x to it.y }.toSet().size)
+        assertEquals((1..5).toList(), model.stepLabels.flatMap { it.steps }.sorted())
+        val revisited = model.stepLabels.first { it.steps == listOf(1, 5) }
+        assertEquals("1,5", revisited.text)
+        // 預演：手指走到哪一步，標籤才顯示到哪一步
+        assertNull(revisited.textAt(0))
+        assertEquals("1", revisited.textAt(1))
+        assertEquals("1", revisited.textAt(4))
+        assertEquals("1,5", revisited.textAt(5))
+        val backToStart = model.stepLabels.first { it.steps == listOf(4) }
+        assertNull(backToStart.textAt(3))
+        assertEquals("4", backToStart.textAt(4))
     }
 
     @Test fun arrowsPointAlongMovementAndThinOutOnLongPaths() {

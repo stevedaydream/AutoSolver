@@ -50,6 +50,7 @@ class PathRenderView(context: Context) : View(context) {
         style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val labelRect = RectF()
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeJoin = Paint.Join.ROUND }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD; color = Color.WHITE
@@ -182,14 +183,6 @@ class PathRenderView(context: Context) : View(context) {
             }
         }
 
-        if (style.showStepNumbers && progress >= 1f) {
-            for (label in m.stepLabels) {
-                fillPaint.color = Color.argb(200, 0, 0, 0)
-                canvas.drawCircle(label.x, label.y - textPaint.textSize * 0.35f, textPaint.textSize * 0.75f, fillPaint)
-                canvas.drawText(label.text, label.x, label.y, textPaint)
-            }
-        }
-
         drawMarkers(canvas, m)
         if (progress < 1f) {
             val (fx, fy) = m.pointAt(progress)
@@ -197,6 +190,23 @@ class PathRenderView(context: Context) : View(context) {
             canvas.drawCircle(fx, fy, m.markerRadius * 0.8f, fillPaint)
             strokePaint.color = Color.BLACK; strokePaint.strokeWidth = w * 0.4f
             canvas.drawCircle(fx, fy, m.markerRadius * 0.8f, strokePaint)
+        }
+        // 步序最後畫，壓在線、箭頭與起終點標記之上；預演時隨手指抵達逐步出現
+        if (style.showStepNumbers) drawStepLabels(canvas, m, if (progress >= 1f) m.segments.size else visible)
+    }
+
+    private fun drawStepLabels(canvas: Canvas, m: PathRenderModel, completedSteps: Int) {
+        val ts = textPaint.textSize
+        val padX = ts * 0.35f
+        for (label in m.stepLabels) {
+            val text = label.textAt(completedSteps) ?: continue
+            val half = textPaint.measureText(text) / 2f + padX
+            val top = label.y - ts * 1.05f
+            val bottom = label.y + ts * 0.3f
+            labelRect.set(label.x - half, top, label.x + half, bottom)
+            fillPaint.color = Color.argb(215, 0, 0, 0)
+            canvas.drawRoundRect(labelRect, ts * 0.6f, ts * 0.6f, fillPaint)
+            canvas.drawText(text, label.x, label.y, textPaint)
         }
     }
 

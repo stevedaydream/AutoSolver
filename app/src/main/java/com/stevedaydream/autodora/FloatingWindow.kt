@@ -60,7 +60,10 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private var currentSteps = prefs.getInt("steps", 35)
     private var strategyMode = prefs.getInt("strategyMode", 0) // 0: 一般, 1: 平鋪, 2: 直排昇華, 3: ML
     private var shapeGoals = ShapeGoal.readList(org.json.JSONArray(prefs.getString(ShapeGoal.PREF_KEY, "[]")))
-    private var startMode = prefs.getInt("startMode", 0)       // 0: 全盤, 1: 左下, 2: 右下
+    private var startMode = prefs.getInt("startMode", 0)       // 0: 全盤, 1: 左下, 2: 右下（舊設定，已換算進 moveConstraint）
+    private var moveConstraint = MoveConstraint.fromPrefs(prefs) // 指定起點／終點格
+    private var clearTypes = ClearGoal.read(prefs)                // 首批全消的屬性（空 = 不限）
+    private var previewClearTypes: Set<BoardAnalyzer.OrbType> = emptySet()
     private var currentGestureMs = prefs.getLong("gestureMs", 5000L)             // 轉珠總時間（毫秒）
     private var currentRoundIntervalMs = prefs.getLong("roundIntervalMs", 4500L) // 自動輪間隔（毫秒）
 
@@ -205,11 +208,18 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         // 用純文字符號（非 emoji）才能被 setTextColor 染色，維持灰階＋語意色的一致性
         val btnPlay = OverlayUi.iconButton(context, "▶", OverlayUi.ACCENT, chipColor = OverlayUi.ACCENT_CHIP)
         val btnPreview = OverlayUi.iconButton(context, "◉", OverlayUi.TEXT_HI)
+        // ✎ 只顯示路線：計算後畫在盤面上，讓使用者自己照著轉；不送出任何手勢
+        val btnShowPath = OverlayUi.iconButton(context, "✎", OverlayUi.ACCENT).apply { contentDescription = "顯示路線（不自動執行）" }
         val btnAuto = OverlayUi.iconButton(context, "↻", OverlayUi.TEXT_HI, textSizeSp = 18f)
         val btnStop = OverlayUi.iconButton(context, "■", OverlayUi.DANGER, textSizeSp = 14f)
         val btnMacro = OverlayUi.iconButton(context, "●", "#F472B6")
         val btnSettings = OverlayUi.iconButton(context, "⚙", OverlayUi.TEXT_LO)
         val btnClose = OverlayUi.iconButton(context, "✕", OverlayUi.TEXT_LO, textSizeSp = 14f)
+
+        btnShowPath.setOnClickListener {
+            if (isGestureRunning || isAutoRunning) return@setOnClickListener
+            analyzeAndComputePath(autoExecute = false)
+        }
 
         btnPlay.setOnClickListener {
             if (isGestureRunning) return@setOnClickListener
@@ -282,6 +292,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                         // 「自動模式先確認」：顯示候選，等使用者選路並按執行（■／✕ 停止自動）
                         previewGeometry = outcome.geometry
                         previewGoals = shapeGoals
+                        previewClearTypes = clearTypes
                         previewController.load(outcome.candidates, outcome.fingerprint, outcome.geometry.calibrationKey,
                             outcome.shapeStatus, outcome.message)
                         updateStatus(Phase.PREVIEW, combo = trueCombo, steps = shownSteps, round = autoRound, note = "等待確認")
@@ -347,11 +358,12 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             settingsPanel.visibility = if (isSettingsOpen) View.VISIBLE else View.GONE
             statusCard.visibility = if (isSettingsOpen) View.GONE else View.VISIBLE
             refreshWindowLayout()
+            renderPreview(previewController.state)
         }
         btnClose.setOnClickListener { accessibilityService.hideFloatingWindow() }
 
         menuLayout.apply {
-            addView(btnPlay); addView(btnPreview); addView(btnAuto); addView(btnStop)
+            addView(btnPlay); addView(btnShowPath); addView(btnPreview); addView(btnAuto); addView(btnStop)
             addView(OverlayUi.vDivider(context))
             addView(btnMacro); addView(btnSettings); addView(btnClose)
         }
@@ -402,6 +414,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 settingsPanel.visibility = View.GONE
                 statusCard.visibility = if (isExpanded) View.VISIBLE else View.GONE
                 refreshWindowLayout()
+                renderPreview(previewController.state)
             }
         })
         settingsPanel.addView(header)
@@ -640,6 +653,41 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         settingsContent.addView(addGoal)
         saveGoals(); renderGoals()
 
+        // ── 首批全消：可複選；達成條件的路線中以 Combo 最高為優先 ──
+        settingsContent.addView(OverlayUi.sectionLabel(context, "首批全消屬性"))
+        settingsContent.addView(TextView(context).apply {
+            text = "選中的屬性必須在第一批消除時全部消掉（不算連鎖與天降），再從中挑 Combo 最高的路線。"
+            textSize = 12f
+            setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
+        })
+        val clearRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, (4 * dp).toInt(), 0, (4 * dp).toInt()) }
+        val clearColors = mapOf(
+            BoardAnalyzer.OrbType.WATER to "#3B82F6", BoardAnalyzer.OrbType.FIRE to "#EF4444", BoardAnalyzer.OrbType.WOOD to "#22C55E",
+            BoardAnalyzer.OrbType.LIGHT to "#EAB308", BoardAnalyzer.OrbType.DARK to "#A855F7", BoardAnalyzer.OrbType.HEART to "#EC4899"
+        )
+        for ((type, color) in clearColors) {
+            val chip = TextView(context).apply {
+                text = ClearGoal.label(type); textSize = 14f; gravity = Gravity.CENTER
+                contentDescription = "首批全消 ${ClearGoal.label(type)}"
+                val size = (40 * dp).toInt()
+                layoutParams = LinearLayout.LayoutParams(size, size).apply { marginEnd = (6 * dp).toInt() }
+            }
+            fun paint() {
+                val on = type in clearTypes
+                chip.background = if (on) OverlayUi.rounded(context, color, 20f) else OverlayUi.rounded(context, OverlayUi.CHIP, 20f, stroked = true)
+                chip.setTextColor(Color.parseColor(if (on) "#FFFFFFFF" else color))
+            }
+            chip.setOnClickListener {
+                clearTypes = if (type in clearTypes) clearTypes - type else clearTypes + type
+                prefs.edit().putString(ClearGoal.PREF_KEY, ClearGoal.format(clearTypes)).apply()
+                paint()
+                clearPreview("首批全消條件已變更")
+            }
+            paint()
+            clearRow.addView(chip)
+        }
+        settingsContent.addView(clearRow)
+
         // ── 版型求解器（只在有版型條件時生效；預設沿用原 Beam）──
         settingsContent.addView(TextView(context).apply {
             text = "版型求解器（Shape-Aware 會在找不到時回報不可行／逾時）"
@@ -698,14 +746,23 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             }
         })
 
-        // ── 起手點位置 ───────────────────────────────────────────
-        settingsContent.addView(OverlayUi.sectionLabel(context, "起手點位置"))
-        val rgStart = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
-        rgStart.addView(makeRadio(0, "全盤尋找", startMode == 0, 12f))
-        rgStart.addView(makeRadio(1, "左下角", startMode == 1, 12f))
-        rgStart.addView(makeRadio(2, "右下角", startMode == 2, 12f))
-        rgStart.setOnCheckedChangeListener { _, id -> startMode = id; prefs.edit().putInt("startMode", id).apply() }
-        settingsContent.addView(rgStart)
+        // ── 起點／終點位置：點格子指定，再點一次或按「不限」取消 ─────────
+        settingsContent.addView(OverlayUi.sectionLabel(context, "起點／終點位置"))
+        settingsContent.addView(TextView(context).apply {
+            text = "點格子指定轉珠起點與放手位置；再點同一格或按「不限」取消。"
+            textSize = 12f
+            setTextColor(Color.parseColor(OverlayUi.TEXT_LO))
+        })
+        settingsContent.addView(makeCellPicker("起點", moveConstraint.startCell, "#22C55E") { cell ->
+            moveConstraint = moveConstraint.copy(startCell = cell)
+            prefs.edit().putInt(MoveConstraint.PREF_START, cell).apply()
+            clearPreview("起點已變更")
+        })
+        settingsContent.addView(makeCellPicker("終點", moveConstraint.endCell, "#EF4444") { cell ->
+            moveConstraint = moveConstraint.copy(endCell = cell)
+            prefs.edit().putInt(MoveConstraint.PREF_END, cell).apply()
+            clearPreview("終點已變更")
+        })
 
         // ── 校正工具 ─────────────────────────────────────────────
         settingsContent.addView(OverlayUi.pillButton(context, "AI 辨識設定與待審樣本").apply {
@@ -753,6 +810,56 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         settingsContent.addView(btnPre, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = (8 * dp).toInt() })
+    }
+
+    /** 5×6 迷你盤面：點格子選定（以 [accent] 標示），再點一次或按「不限」回到 -1。 */
+    private fun makeCellPicker(title: String, initial: Int, accent: String, onChange: (Int) -> Unit): LinearLayout {
+        val dp = context.resources.displayMetrics.density
+        var selected = initial
+        val cells = ArrayList<TextView>(MoveConstraint.CELLS)
+        val valueText = TextView(context).apply {
+            setTextColor(Color.parseColor(OverlayUi.VALUE)); textSize = 13f
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        fun refresh() {
+            valueText.text = MoveConstraint.label(selected)
+            cells.forEachIndexed { i, v ->
+                v.background = if (i == selected) OverlayUi.rounded(context, accent, 6f)
+                else OverlayUi.rounded(context, OverlayUi.CHIP, 6f, stroked = true)
+                v.setTextColor(Color.parseColor(if (i == selected) "#FFFFFFFF" else OverlayUi.TEXT_LO))
+            }
+        }
+        fun choose(cell: Int) { selected = cell; refresh(); onChange(cell) }
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (6 * dp).toInt(), 0, (4 * dp).toInt())
+            addView(TextView(context).apply {
+                text = title; setTextColor(Color.parseColor(OverlayUi.TEXT_HI)); textSize = 13f
+                setPadding(0, 0, (10 * dp).toInt(), 0)
+            })
+            addView(valueText)
+            addView(OverlayUi.pillButton(context, "不限").apply { setOnClickListener { choose(-1) } })
+        }
+        val grid = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val size = (30 * dp).toInt()
+        val gap = (3 * dp).toInt()
+        for (r in 0 until 5) {
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            for (c in 0 until 6) {
+                val cell = r * 6 + c
+                val v = TextView(context).apply {
+                    text = "${cell + 1}"; textSize = 10f; gravity = Gravity.CENTER
+                    contentDescription = "$title ${MoveConstraint.label(cell)}"
+                    layoutParams = LinearLayout.LayoutParams(size, size).apply { setMargins(gap, gap, gap, gap) }
+                    setOnClickListener { choose(if (selected == cell) -1 else cell) }
+                }
+                cells.add(v); row.addView(v)
+            }
+            grid.addView(row)
+        }
+        refresh()
+        return LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; addView(header); addView(grid) }
     }
 
     /** 設定列：左側標籤 + 右側「− 值 ＋」步進器 */
@@ -994,21 +1101,22 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         val fingerprint = PathReplay.fingerprint(board)
         val geometry = BoardGeometry(sX.toFloat(), sY.toFloat(), oS.toFloat())
         val goals = shapeGoals
+        val clear = clearTypes
         if (board.any { row -> row.any { it == BoardAnalyzer.OrbType.UNKNOWN } }) {
             return@withContext ComputeOutcome(fingerprint, geometry, emptyList(), false,
                 if (goals.isEmpty()) null else ShapeSolveStatus.INFEASIBLE, "盤面有未辨識符石")
         }
         val verifier = goals.takeIf { it.isNotEmpty() }?.let { ShapeVerifier(it) }
         when {
-            strategyMode == 3 && goals.isEmpty() -> {
+            strategyMode == 3 && goals.isEmpty() && clear.isEmpty() -> {
                 val ml = getOrCreateMLPlanner()
                 if (ml != null) {
-                    val res = analyzer.calculateMLPath(board, oS.toFloat(), sX.toFloat(), sY.toFloat(), ml, currentSteps, startMode)
+                    val res = analyzer.calculateMLPath(board, oS.toFloat(), sX.toFloat(), sY.toFloat(), ml, currentSteps, startMode, moveConstraint)
                     // 舊 Pair API → PathCandidate adapter；ML 只會產生上下左右
                     val candidate = CandidateFactory.fromPixelPath(board, res.first, geometry, false, null, CandidateSource.ML)
                     ComputeOutcome(fingerprint, geometry, listOfNotNull(candidate?.takeIf { it.executable }), false, null, "")
                 } else {
-                    val list = analyzer.calculateOptimalCandidates(board, is8Way, 0, startMode, currentSteps, beamWidth)
+                    val list = analyzer.calculateOptimalCandidates(board, is8Way, 0, startMode, currentSteps, beamWidth, constraint = moveConstraint)
                         .map { it.copy(source = CandidateSource.ML_FALLBACK) }
                     ComputeOutcome(fingerprint, geometry, list, true, null, "ML未就緒")
                 }
@@ -1016,21 +1124,27 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             goals.isNotEmpty() && solverMode == SolverMode.SHAPE_AWARE -> {
                 val job = coroutineContext[Job]
                 val budget = SearchBudget(maxSteps = currentSteps, beamWidth = beamWidth, is8Way = is8Way,
-                    startMode = startMode, timeLimitMs = 3000L)
+                    startMode = startMode, timeLimitMs = 3000L, constraint = moveConstraint, clearTypes = clear)
                 val result = analyzer.solveShapeAware(board, goals, budget, strategyMode) { job?.isActive == false }
                 ComputeOutcome(fingerprint, geometry, result.candidates, false, result.status,
                     "${result.message}（${result.elapsedMs}ms）")
             }
             else -> {
-                val list = analyzer.calculateOptimalCandidates(board, is8Way, strategyMode, startMode,
-                    currentSteps, beamWidth, goals)
+                // ML 策略加上全消條件時改用 Beam（模型無法保證全消）
+                val beamStrategy = if (strategyMode == 3) 0 else strategyMode
+                val list = analyzer.calculateOptimalCandidates(board, is8Way, beamStrategy, startMode,
+                    currentSteps, beamWidth, goals, constraint = moveConstraint, clearTypes = clear)
+                val infeasible = verifier?.infeasibleReason(board) ?: ClearGoal.infeasibleReason(board, clear)
                 val status = when {
-                    verifier == null -> null
+                    verifier == null && clear.isEmpty() -> null
                     list.isNotEmpty() -> ShapeSolveStatus.SOLVED
-                    verifier.infeasibleReason(board) != null -> ShapeSolveStatus.INFEASIBLE
+                    infeasible != null -> ShapeSolveStatus.INFEASIBLE
                     else -> ShapeSolveStatus.GOALS_UNSATISFIED
                 }
-                val message = verifier?.infeasibleReason(board) ?: status?.takeIf { it != ShapeSolveStatus.SOLVED }?.label ?: ""
+                val message = infeasible
+                    ?: if (list.isEmpty() && clear.isNotEmpty()) "步數內無法首批全消${ClearGoal.describe(clear)}"
+                    else status?.takeIf { it != ShapeSolveStatus.SOLVED }?.label
+                    ?: if (list.isEmpty() && moveConstraint.hasEnd) "步數內無法在指定終點放手" else ""
                 ComputeOutcome(fingerprint, geometry, list, false, status, message)
             }
         }
@@ -1046,6 +1160,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         settingsPanel.visibility = View.GONE
         statusCard.visibility = if (isExpanded) View.VISIBLE else View.GONE
         refreshWindowLayout()
+        renderPreview(previewController.state)
     }
 
     /** 清空預覽（新截圖、重新校正、取消、手勢結束、離開等情況）。 */
@@ -1060,12 +1175,17 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
 
     /** 依預覽狀態更新畫布與控制列；單一 overlay View，切換候選只換 model 再 invalidate。 */
     private fun renderPreview(state: PathPreviewState) {
+        // 設定面板開著時先收起路線與控制列，關閉設定後再畫回來
+        if (isSettingsOpen) {
+            pathOverlayWindow.hide(); previewBar.hide(); renderedCandidateId = null; isPreviewAnimating = false
+            return
+        }
         val geometry = previewGeometry
         if (state.boardFingerprint == null || geometry == null) {
             pathOverlayWindow.hide(); previewBar.hide(); renderedCandidateId = null; isPreviewAnimating = false
             return
         }
-        previewBar.render(state, previewGoals, boardTopY = geometry.startY.toInt())
+        previewBar.render(state, previewGoals, boardTopY = geometry.startY.toInt(), clearTypes = previewClearTypes)
         val candidate = state.selected
         if (candidate == null || !state.visible) {
             pathOverlayWindow.hide(); renderedCandidateId = null; isPreviewAnimating = false
@@ -1149,6 +1269,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
                 } else {
                     previewGeometry = outcome.geometry
                     previewGoals = shapeGoals
+                    previewClearTypes = clearTypes
                     previewController.load(outcome.candidates, outcome.fingerprint, outcome.geometry.calibrationKey,
                         outcome.shapeStatus, outcome.message)
                     if (best == null) updateStatus(Phase.NO_PATH, note = outcome.message)

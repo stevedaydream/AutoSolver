@@ -25,10 +25,15 @@ data class SearchBudget(
     val refineTopK: Int = 5,
     val refineDepth: Int = 4,
     val maxCandidates: Int = 5,
-    val deduplicate: Boolean = true
+    val deduplicate: Boolean = true,
+    /** 起點／終點格限制（-1 不限）；起點優先於 startMode。 */
+    val constraint: MoveConstraint = MoveConstraint.NONE,
+    /** 首批全消的屬性（空集合 = 不限）；達成後以 Combo 最高為優先。 */
+    val clearTypes: Set<BoardAnalyzer.OrbType> = emptySet()
 )
 
-data class BoardScore(val combos: Int, val firstWaveCombos: Int, val score: Int)
+/** clearLeft／clearCost：首批全消的剩餘顆數與引導成本（未設定條件時為 0）。 */
+data class BoardScore(val combos: Int, val firstWaveCombos: Int, val score: Int, val clearLeft: Int = 0, val clearCost: Int = 0)
 
 data class ShapeSolveResult(
     val status: ShapeSolveStatus,
@@ -111,6 +116,10 @@ internal class ShapeAwareSolver(
         val isEmpty get() = entries.isEmpty()
     }
 
+    /** 補走會把手上的珠子帶走；手指若停在已完成的形狀上，補走必定破壞形狀，不值得保留。 */
+    private fun fingerOutsideShapes(board: Array<Array<OrbType>>, finger: Int): Boolean =
+        verifier.verify(board).usedMask and (1L shl finger) == 0L
+
     fun solve(board: Array<Array<OrbType>>, budget: SearchBudget): ShapeSolveResult {
         startNanos = clock()
         deadline = startNanos + budget.timeLimitMs.coerceAtLeast(1L) * 1_000_000L
@@ -125,6 +134,7 @@ internal class ShapeAwareSolver(
         if (board.size != rows || board.any { it.size != cols || it.any { orb -> orb == OrbType.UNKNOWN } })
             return result(ShapeSolveStatus.INFEASIBLE, message = "盤面仍有未辨識符石")
         verifier.infeasibleReason(board)?.let { return result(ShapeSolveStatus.INFEASIBLE, message = it) }
+        ClearGoal.infeasibleReason(board, budget.clearTypes)?.let { return result(ShapeSolveStatus.INFEASIBLE, message = it) }
 
         val maxSteps = budget.maxSteps.coerceIn(5, 60)
         val beam = budget.beamWidth.coerceIn(30, 500)
@@ -136,8 +146,10 @@ internal class ShapeAwareSolver(
         val guide = Comparator<SearchNode> { left, right ->
             when {
                 left.shapes.satisfied != right.shapes.satisfied -> left.shapes.satisfied.compareTo(right.shapes.satisfied)
-                left.shapes.potential != right.shapes.potential -> left.shapes.potential.compareTo(right.shapes.potential)
-                else -> left.score.compareTo(right.score)
+                left.shapes.satisfied < goals.size && left.shapes.potential != right.shapes.potential ->
+                    left.shapes.potential.compareTo(right.shapes.potential)
+                else -> (left.score.toLong() - left.clearCost.toLong() * ClearGoal.guideWeight)
+                    .compareTo(right.score.toLong() - right.clearCost.toLong() * ClearGoal.guideWeight)
             }
         }
         val selector = BeamSelector(beam, { a, b -> guide.compare(nextNodes[a], nextNodes[b]) }) { nextNodes[it].score }
@@ -152,11 +164,10 @@ internal class ShapeAwareSolver(
             if (seeds.size > budget.refineTopK) seeds.removeAt(seeds.size - 1)
         }
 
-        val starts = when (budget.startMode) {
-            1 -> listOf(4 * cols)
-            2 -> listOf(4 * cols + cols - 1)
-            else -> (0 until rows * cols).toList()
-        }
+        val constraint = budget.constraint
+        val starts = constraint.startCells(budget.startMode)
+        // 指定終點：形狀已達成但停在別處的路線，最後補走到終點再驗證一次
+        val nearMiss = if (constraint.hasEnd) SolvedPool(16, maxSteps) else null
         val initial = scorer(board)
         val initialShapes = evaluator.evaluate(board)
         var currentCount = 0
@@ -167,6 +178,7 @@ internal class ShapeAwareSolver(
             n.r = cell / cols; n.c = cell % cols
             n.pathLen = 1; n.pathR[0] = n.r; n.pathC[0] = n.c
             n.combos = initial.combos; n.score = initial.score; n.shapes = initialShapes
+            n.clearLeft = initial.clearLeft; n.clearCost = initial.clearCost
         }
 
         val seen = HashSet<StateKey>()
@@ -193,11 +205,14 @@ internal class ShapeAwareSolver(
                     if (budget.deduplicate && !seen.add(StateKey.of(next.board, nr * cols + nc, curr.r * cols + curr.c))) continue
                     val scored = scorer(next.board)
                     next.combos = scored.combos
+                    next.clearLeft = scored.clearLeft; next.clearCost = scored.clearCost
                     next.score = scored.score - next.pathLen * 15
                     next.shapes = evaluator.evaluate(next.board)
                     if (next.shapes.satisfied > bestSatisfied) bestSatisfied = next.shapes.satisfied
-                    if (next.shapes.satisfied == goals.size && next.combos > 0) {
-                        solved.offer(next.board, next.pathR, next.pathC, next.pathLen, next.combos, next.score)
+                    if (next.shapes.satisfied == goals.size && next.combos > 0 && next.clearLeft == 0) {
+                        if (constraint.endOk(nr * cols + nc)) solved.offer(next.board, next.pathR, next.pathC, next.pathLen, next.combos, next.score)
+                        else if (nearMiss != null && fingerOutsideShapes(next.board, nr * cols + nc))
+                            nearMiss.offer(next.board, next.pathR, next.pathC, next.pathLen, next.combos, next.score)
                     }
                     nextCount++
                 }
@@ -226,7 +241,11 @@ internal class ShapeAwareSolver(
                 if (satisfied > bestSatisfied) bestSatisfied = satisfied
                 if (satisfied == goals.size) {
                     val scored = scorer(work)
-                    if (scored.combos > 0) solved.offer(work, pathR, pathC, len + 1, scored.combos, scored.score - (len + 1) * 15)
+                    if (scored.combos > 0 && scored.clearLeft == 0) {
+                        if (constraint.endOk(nr * cols + nc)) solved.offer(work, pathR, pathC, len + 1, scored.combos, scored.score - (len + 1) * 15)
+                        else if (nearMiss != null && fingerOutsideShapes(work, nr * cols + nc))
+                            nearMiss.offer(work, pathR, pathC, len + 1, scored.combos, scored.score - (len + 1) * 15)
+                    }
                 }
                 dfs(nr, nc, len + 1, depth + 1)
                 work[nr][nc] = work[r][c]; work[r][c] = temp
@@ -248,12 +267,28 @@ internal class ShapeAwareSolver(
             dfs(seed.r, seed.c, seed.pathLen, 0)
         }
 
+        // ── 指定終點：補走到終點後重新驗證形狀與 Combo ──
+        if (nearMiss != null) for (node in nearMiss.sorted()) {
+            if (outOfBudget()) break
+            val cells = (0 until node.pathLen).map { node.pathR[it] * cols + node.pathC[it] }
+            val walk = PathReplay.walkTo(cells.last(), cells.getOrElse(cells.size - 2) { -1 }, constraint.endCell,
+                budget.is8Way, maxSteps - (cells.size - 1)) ?: continue
+            val full = cells + walk
+            val replayed = PathReplay.replay(board, full)
+            if (!verifier.verify(replayed).allSatisfied) continue
+            val scored = scorer(replayed)
+            if (scored.combos <= 0 || scored.clearLeft != 0) continue
+            val fr = IntArray(full.size) { full[it] / cols }; val fc = IntArray(full.size) { full[it] % cols }
+            solved.offer(replayed, fr, fc, full.size, scored.combos, scored.score - full.size * 15)
+        }
+
         // ── 最終驗證：重播格位路徑、檢查 4/8 向、放手前形狀、再以 BoardSimulator 核算 Combo ──
         val simulator = BoardSimulator(rows, cols)
         val verified = solved.sorted().mapNotNull { node ->
             val cells = (0 until node.pathLen).map { node.pathR[it] * cols + node.pathC[it] }
-            CandidateFactory.build(board, cells, budget.is8Way, verifier, CandidateSource.SHAPE_AWARE, node.score.toLong(), simulator)
-        }.filter { it.executable && it.shapeVerified }
+            CandidateFactory.build(board, cells, budget.is8Way, verifier, CandidateSource.SHAPE_AWARE, node.score.toLong(),
+                simulator, budget.clearTypes)
+        }.filter { it.executable && it.shapeVerified && constraint.endOk(it.pathCells.last()) }
         val candidates = CandidateFactory.dedupe(verified).take(budget.maxCandidates.coerceAtLeast(1))
 
         return when {

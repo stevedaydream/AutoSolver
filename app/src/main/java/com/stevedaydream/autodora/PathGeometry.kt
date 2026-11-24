@@ -21,7 +21,18 @@ data class RenderArrow(
     val rightX: Float, val rightY: Float
 )
 
-data class RenderLabel(val text: String, val x: Float, val y: Float)
+/**
+ * 一格的步序標籤。同一格經過多次時合併成「3,7」，不會只留第一次。
+ * [steps] 為抵達此格的步號（遞增）；[prefixTexts] 預先算好「前 k 個步號」的文字，預演時逐步顯示、onDraw 不配置字串。
+ */
+data class RenderLabel(val text: String, val x: Float, val y: Float, val steps: List<Int> = emptyList(),
+                       val prefixTexts: List<String> = listOf(text)) {
+    /** 走完 [completedSteps] 步時應顯示的文字；尚未抵達回傳 null。 */
+    fun textAt(completedSteps: Int): String? {
+        val count = steps.count { it <= completedSteps }
+        return if (count == 0) null else prefixTexts[count - 1]
+    }
+}
 
 /**
  * Canvas 需要的全部幾何，於選路時一次算好並快取；onDraw 只讀不配置。
@@ -107,10 +118,14 @@ object PathGeometryBuilder {
                 bx + uy * arrowSize * 0.5f, by - ux * arrowSize * 0.5f)
         }
 
-        // 步序標籤：每一格只標第一次經過的步號，避免數字疊在一起
-        val labeled = HashSet<Int>()
-        val labels = cells.withIndex().filter { (i, cell) -> i > 0 && i < cells.size - 1 && labeled.add(cell) }
-            .map { (i, cell) -> RenderLabel("$i", geometry.centerX(cell) + geometry.orbSize * 0.22f, geometry.centerY(cell) - geometry.orbSize * 0.22f) }
+        // 步序標籤：第 1..n 步每一步都標；同一格多次經過合併成一個標籤（例如 3,7），避免互相覆蓋
+        val byCell = LinkedHashMap<Int, MutableList<Int>>()
+        for (i in 1 until cells.size) byCell.getOrPut(cells[i]) { mutableListOf() }.add(i)
+        val labels = byCell.map { (cell, steps) ->
+            val prefixes = steps.indices.map { k -> steps.subList(0, k + 1).joinToString(",") }
+            RenderLabel(prefixes.last(), geometry.centerX(cell) + geometry.orbSize * 0.22f,
+                geometry.centerY(cell) - geometry.orbSize * 0.22f, steps, prefixes)
+        }
 
         val shapeCells = candidate.shapeMatches.flatMap { match -> match.placement.cells.map { it to match.placement.orbType } }
         return PathRenderModel(candidate.id, segments, arrows, xs.first(), ys.first(), xs.last(), ys.last(),

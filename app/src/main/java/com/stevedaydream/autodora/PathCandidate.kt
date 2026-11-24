@@ -40,11 +40,16 @@ data class PathCandidate(
     val boardFingerprint: String,
     val resultFingerprint: String,
     val is8Way: Boolean,
-    val source: CandidateSource
+    val source: CandidateSource,
+    /** 首批全消條件與未消除的剩餘顆數（0 = 達成）。 */
+    val clearTypes: Set<OrbType> = emptySet(),
+    val clearRemaining: Int = 0
 ) {
+    val clearVerified: Boolean get() = clearTypes.isEmpty() || clearRemaining == 0
     val shapeSatisfied: Int get() = shapeMatches.size
     /** 只有合法、有 Combo、且所有硬性形狀條件都經精確驗證的候選可以交付手勢。 */
-    val executable: Boolean get() = pathCells.size >= 2 && deterministicCombos > 0 && (shapeRequired == 0 || shapeVerified)
+    val executable: Boolean get() = pathCells.size >= 2 && deterministicCombos > 0 &&
+        (shapeRequired == 0 || shapeVerified) && clearVerified
 }
 
 internal object CandidateFactory {
@@ -59,13 +64,15 @@ internal object CandidateFactory {
         verifier: ShapeVerifier?,
         source: CandidateSource,
         score: Long = 0L,
-        simulator: BoardSimulator = BoardSimulator(5, 6)
+        simulator: BoardSimulator = BoardSimulator(5, 6),
+        clearTypes: Set<OrbType> = emptySet()
     ): PathCandidate? {
         if (!PathReplay.isLegal(cells, is8Way)) return null
         if (board.any { row -> row.any { it == OrbType.UNKNOWN } }) return null
         val replayed = PathReplay.replay(board, cells)
         val verification = verifier?.verify(replayed)
         val combos = simulator.resolve(replayed)
+        val clearRemaining = ClearGoal.remaining(replayed, simulator.firstWaveMatch, clearTypes)
         val fingerprint = PathReplay.fingerprint(board)
         return PathCandidate(
             id = "${source.name}-${fingerprint.hashCode().toUInt().toString(16)}-${cells.joinToString(".")}",
@@ -82,7 +89,9 @@ internal object CandidateFactory {
             boardFingerprint = fingerprint,
             resultFingerprint = PathReplay.fingerprint(replayed),
             is8Way = is8Way,
-            source = source
+            source = source,
+            clearTypes = clearTypes,
+            clearRemaining = clearRemaining
         )
     }
 
