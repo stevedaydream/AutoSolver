@@ -3,6 +3,7 @@
 package com.stevedaydream.autodora
 
 import android.annotation.SuppressLint
+import android.app.PendingIntent
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -35,6 +36,23 @@ class ScreenCaptureService : Service() {
     companion object {
         var instance: ScreenCaptureService? = null
             private set
+        const val ACTION_STOP = "com.stevedaydream.autodora.STOP_CAPTURE"
+
+        /** 目前是否正在擷取（服務存在且 MediaProjection 仍有效）。 */
+        val isCapturing: Boolean get() = instance?.mediaProjection != null
+
+        /** App 內的「停止螢幕擷取」：與從系統狀態列停止分享效果相同。 */
+        fun stop(context: Context) {
+            instance?.stopCapture() ?: context.stopService(Intent(context, ScreenCaptureService::class.java))
+        }
+    }
+
+    /** 釋放 MediaProjection、移除前景通知並結束服務；下次需回主畫面重新授權。 */
+    fun stopCapture() {
+        releaseProjection()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
+        else @Suppress("DEPRECATION") stopForeground(true)
+        stopSelf()
     }
 
     override fun onCreate() {
@@ -45,6 +63,10 @@ class ScreenCaptureService : Service() {
             .setContentTitle("AutoDora Capture Service")
             .setContentText("Screen capturing is active.")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
+            // 通知上直接提供「停止分享」
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止分享",
+                PendingIntent.getService(this, 1, Intent(this, ScreenCaptureService::class.java).setAction(ACTION_STOP),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -57,6 +79,10 @@ class ScreenCaptureService : Service() {
     // --- 修改開頭：修正 resultCode 判斷邏輯與 Intent 取值方式 ---
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // 預設值改為 0 (RESULT_CANCELED) 避免與 RESULT_OK (-1) 混淆
+        if (intent?.action == ACTION_STOP) {
+            stopCapture()
+            return START_NOT_STICKY
+        }
         val resultCode = intent?.getIntExtra("RESULT_CODE", 0) ?: 0
 
         // 針對 Android 13 (API 33) 以上加強 Parcelable 的型別安全取值

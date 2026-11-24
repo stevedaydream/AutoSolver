@@ -355,6 +355,7 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         btnStop.setOnClickListener { isAutoRunning = false; autoConfirmDecision?.complete(false); updateStatus(Phase.STOPPED) }
         btnSettings.setOnClickListener {
             isSettingsOpen = !isSettingsOpen
+            if (isSettingsOpen) refreshCaptureRow()
             settingsPanel.visibility = if (isSettingsOpen) View.VISIBLE else View.GONE
             statusCard.visibility = if (isSettingsOpen) View.GONE else View.VISIBLE
             refreshWindowLayout()
@@ -430,6 +431,37 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
             addView(settingsContent)
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         val accentTint = ColorStateList.valueOf(Color.parseColor(OverlayUi.ACCENT))
+
+        // ── 螢幕擷取：顯示狀態並可直接停止分享 ─────────────────────
+        settingsContent.addView(OverlayUi.sectionLabel(context, "螢幕擷取"))
+        captureStatusText = TextView(context).apply {
+            textSize = 13f
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        captureButton = OverlayUi.pillButton(context, "").apply {
+            setOnClickListener {
+                if (ScreenCaptureService.isCapturing) {
+                    isAutoRunning = false
+                    clearPreview("已停止螢幕擷取")
+                    ScreenCaptureService.stop(context)
+                    Toast.makeText(context, "已停止分享螢幕給 AutoDora", Toast.LENGTH_SHORT).show()
+                    // 服務結束是非同步的，稍候再更新狀態
+                    postDelayed({ refreshCaptureRow() }, 300)
+                    refreshCaptureRow()
+                } else {
+                    // 重新授權必須由主畫面發起系統的分享確認框
+                    context.startActivity(android.content.Intent(context, MainActivity::class.java)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP))
+                    closeSettings()
+                }
+            }
+        }
+        settingsContent.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(captureStatusText); addView(captureButton)
+        })
+        refreshCaptureRow()
 
         settingsContent.addView(OverlayUi.sectionLabel(context, "版本更新"))
         val currentVersion = runCatching {
@@ -810,6 +842,18 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         settingsContent.addView(btnPre, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = (8 * dp).toInt() })
+    }
+
+    private var captureStatusText: TextView? = null
+    private var captureButton: TextView? = null
+
+    /** 依目前擷取狀態更新設定裡的「螢幕擷取」列。 */
+    private fun refreshCaptureRow() {
+        val capturing = ScreenCaptureService.isCapturing
+        captureStatusText?.text = if (capturing) "● 擷取中（正在分享螢幕）" else "○ 未擷取"
+        captureStatusText?.setTextColor(Color.parseColor(if (capturing) OverlayUi.ACCENT else OverlayUi.TEXT_LO))
+        captureButton?.text = if (capturing) "■ 停止擷取" else "開始擷取"
+        captureButton?.setTextColor(Color.parseColor(if (capturing) OverlayUi.DANGER else OverlayUi.ACCENT))
     }
 
     /** 5×6 迷你盤面：點格子選定（以 [accent] 標示），再點一次或按「不限」回到 -1。 */
