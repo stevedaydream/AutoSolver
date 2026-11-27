@@ -1172,7 +1172,9 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
     private fun startOrderedShield() {
         val calibration = BoardCalibration.resolve(context, prefs)
         val sX = calibration.startX; val sY = calibration.startY; val oS = calibration.orbSize
-        val hadPreview = pathOverlayWindow.isShowing || previewBar.isShowing
+        // ◉ 的辨識標籤若還開著，會蓋住珠子被拍進截圖，計算前一併收起
+        val hadPreview = pathOverlayWindow.isShowing || previewBar.isShowing || recognitionOverlayWindow.isShowing
+        recognitionOverlayWindow.hide()
         clearPreview()
         tryLoadTemplates()
         scope.launch {
@@ -1304,7 +1306,9 @@ class FloatingWindow(private val context: Context, private val accessibilityServ
         val oS = calibration.orbSize
         if (!calibration.calibrated) Toast.makeText(context,
             "尚未校正盤面範圍，已依螢幕尺寸估計；若對不準請用設定的「調整辨識區域」校正", Toast.LENGTH_LONG).show()
-        val hadPreview = pathOverlayWindow.isShowing || previewBar.isShowing
+        // ◉ 的辨識標籤若還開著，會蓋住珠子被拍進截圖，計算前一併收起
+        val hadPreview = pathOverlayWindow.isShowing || previewBar.isShowing || recognitionOverlayWindow.isShowing
+        recognitionOverlayWindow.hide()
         clearPreview()
         tryLoadTemplates()
         scope.launch {

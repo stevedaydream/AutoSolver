@@ -18,6 +18,9 @@ class RecognitionOverlayWindow(private val context: Context) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var overlayView: View? = null
 
+    /** 辨識標籤層是否還蓋在盤面上（計算前要先收起，否則會被拍進截圖）。 */
+    val isShowing: Boolean get() = overlayView?.isAttachedToWindow == true
+
     fun show(
         board: Array<Array<BoardAnalyzer.OrbType>>,
         features: Array<Array<BoardAnalyzer.CellFeatures>>,

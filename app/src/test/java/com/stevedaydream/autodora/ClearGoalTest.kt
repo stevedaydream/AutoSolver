@@ -81,4 +81,59 @@ class ClearGoalTest {
             listOf(ShapeGoal(ShapePattern.T)), SearchBudget(clearTypes = setOf(OrbType.FIRE)))
         assertEquals(ShapeSolveStatus.INFEASIBLE, infeasible.status)
     }
+
+    @Test fun scatteredTargetsOnUserBoardAreCleared() {
+        // 使用者實盤：4 顆暗珠分散在四個角落附近，必須全部在同一批連成一組
+        val board = BoardSimulatorTest.board("ODLLHD", "WHOWHL", "LFFOOD", "WLFHFO", "ODOLHH")
+        val types = setOf(OrbType.DARK)
+        val candidates = BoardAnalyzer().calculateOptimalCandidates(board, false, 0, 0, 35, 200, clearTypes = types)
+        assertTrue(candidates.isNotEmpty())
+        for (c in candidates) assertEquals(0, firstWaveLeft(PathReplay.replay(board, c.pathCells), types))
+        // 從 GO（右上角）起手也要能解
+        val fromGo = BoardAnalyzer().calculateOptimalCandidates(board, false, 0, 0, 35, 200,
+            constraint = MoveConstraint(startCell = 5), clearTypes = types)
+        assertTrue(fromGo.isNotEmpty() && fromGo.all { it.pathCells.first() == 5 })
+    }
+
+    @Test fun formationDistanceIsZeroForALineAndGrowsWhenScattered() {
+        assertEquals(0, ClearGoal.formationDistance(listOf(2, 2, 2), listOf(1, 2, 3), 5, 6))
+        assertEquals(0, ClearGoal.formationDistance(listOf(0, 1, 2, 3), listOf(4, 4, 4, 4), 5, 6))
+        assertTrue(ClearGoal.formationDistance(listOf(0, 0, 2, 4), listOf(1, 5, 5, 1), 5, 6) > 4)
+    }
+
+    @Test fun orderedShieldPlusClearOnUserBoardIsSolvedByPushPlanner() {
+        // 使用者實盤：GO（右上）起、右側暗珠終，且首批全消暗——Beam 找不到，需推珠規劃器
+        val board = BoardSimulatorTest.board("ODLLHD", "WHOWHL", "LFFOOD", "WLFHFO", "ODOLHH")
+        val types = setOf(OrbType.DARK)
+        val candidates = BoardAnalyzer().calculateOptimalCandidates(board, false, 0, 0, 35, 200,
+            constraint = MoveConstraint(5, 17), clearTypes = types)
+        assertTrue(candidates.isNotEmpty())
+        for (c in candidates) {
+            assertEquals(5, c.pathCells.first())
+            assertEquals(17, c.pathCells.last())
+            assertTrue(c.pathCells.size - 1 <= 35)
+            assertTrue(PathReplay.isLegal(c.pathCells, false))
+            assertEquals(0, firstWaveLeft(PathReplay.replay(board, c.pathCells), types))
+            assertTrue(c.deterministicCombos >= 1)
+        }
+    }
+
+    @Test fun twoPhaseClearThenComboUsesTheSpareSteps() {
+        // 兩段式：先推好起終點 + 全消排列，再用剩下的步數堆 Combo；步數越多 Combo 不應更少
+        val board = BoardSimulatorTest.board("ODLLHD", "WHOWHL", "LFFOOD", "WLFHFO", "ODOLHH")
+        val types = setOf(OrbType.DARK)
+        var previous = 0
+        for (steps in listOf(35, 45, 60)) {
+            val t0 = System.currentTimeMillis()
+            val candidates = BoardAnalyzer().calculateOptimalCandidates(board, false, 0, 0, steps, 200,
+                constraint = MoveConstraint(5, 17), clearTypes = types)
+            val best = candidates.first()
+            println("PHASE2 steps=$steps combos=${best.deterministicCombos} len=${best.pathCells.size - 1} ms=${System.currentTimeMillis() - t0}")
+            assertEquals(5, best.pathCells.first()); assertEquals(17, best.pathCells.last())
+            assertEquals(0, firstWaveLeft(PathReplay.replay(board, best.pathCells), types))
+            assertTrue(best.deterministicCombos >= previous)
+            previous = best.deterministicCombos
+        }
+        assertTrue("60 步應比只推珠的 2 Combo 多", previous > 2)
+    }
 }

@@ -19,6 +19,10 @@ class BoardAnalyzer {
     )
 
     companion object {
+        /** 指定終點時，每離終點 1 格在最後一步的扣分（約 1 個 Combo）；前段按已用步數比例遞減。 */
+        internal const val END_PULL = 50_000L
+        /** 兩段式全消求解：取最短的幾個推珠方案接續 Beam（每個方案多跑一次 Beam）。 */
+        internal const val PHASE2_PLANS = 3
         // 存放六種屬性的標準樣板 (16x16 縮圖)，全域共用
         val templates = mutableMapOf<OrbType, Bitmap>()
     }
@@ -481,8 +485,33 @@ class BoardAnalyzer {
             val cells = (0 until node.pathLen).map { node.pathR[it] * 6 + node.pathC[it] }
             CandidateFactory.build(board, cells, is8Way, verifier, CandidateSource.BEAM, node.score.toLong(), simulator, clearTypes)
         }.filter { it.executable && constraint.endOk(it.pathCells.last()) }
+        // Beam 找不到全消解（或有指定終點）時改用兩段式：
+        // ① 推珠規劃器先把目標珠排成一直線（含起終點）② 從排好的盤面接續 Beam，用剩餘步數堆 Combo
+        val maxTotal = steps.coerceIn(5, 60)
+        val planned = if (clearTypes.size == 1 && shapeGoals.isEmpty() && (built.isEmpty() || constraint.hasEnd)) {
+            val plans = ClearPlanner.plan(board, clearTypes, constraint.takeIf { it.hasStart || it.hasEnd } ?: MoveConstraint(
+                startCell = constraint.startCells(startMode).singleOrNull() ?: -1), maxTotal)
+            val paths = ArrayList<List<Int>>()
+            for (plan in plans.take(PHASE2_PLANS)) {
+                paths.add(plan.cells)
+                val prefix = plan.arranged
+                val remaining = maxTotal - (prefix.size - 1)
+                if (remaining < 2) continue
+                val mid = PathReplay.replay(board, prefix)
+                val tail = runBeam(mid, is8Way, strategyMode, startMode, remaining, beamWidth, emptyList(), poolCapacity = 3,
+                    constraint = MoveConstraint(prefix.last(), constraint.endCell), clearTypes = clearTypes)
+                for (node in tail) {
+                    val suffix = (1 until node.pathLen).map { node.pathR[it] * 6 + node.pathC[it] }
+                    if (prefix.size - 1 + suffix.size <= maxTotal) paths.add(prefix + suffix)
+                }
+            }
+            paths.mapNotNull { cells ->
+                CandidateFactory.build(board, cells, is8Way, verifier, CandidateSource.BEAM, 0L, simulator, clearTypes)
+            }.filter { it.executable && constraint.endOk(it.pathCells.last()) &&
+                (!constraint.hasStart || it.pathCells.first() == constraint.startCell) }
+        } else emptyList()
         // 有首批全消條件時，達成者之間以 Combo 最高為優先
-        val ordered = if (clearTypes.isEmpty()) built else built.sortedByDescending { it.deterministicCombos }
+        val ordered = if (clearTypes.isEmpty()) built else (built + planned).sortedByDescending { it.deterministicCombos }
         return CandidateFactory.dedupe(ordered).take(maxCandidates.coerceAtLeast(1))
     }
 
@@ -528,6 +557,9 @@ class BoardAnalyzer {
         if (!isCompleteBoard(board)) return emptyList()
         if (ClearGoal.infeasibleReason(board, clearTypes) != null) return emptyList()
         val requireClear = clearTypes.isNotEmpty()
+        // 起結有序盾：起點珠會被一路帶到終點，全消排列需經過終點格
+        val anchorType = if (constraint.hasStart && constraint.hasEnd) board[constraint.startCell / 6][constraint.startCell % 6] else null
+        val anchorCell = if (anchorType != null && anchorType in clearTypes) constraint.endCell else -1
         val shapeEvaluator = shapeGoals.takeIf { it.isNotEmpty() }?.let { ShapeEvaluator(it) }
         if (shapeEvaluator != null && !shapeEvaluator.canAttempt(board)) return emptyList()
         val maxSteps = steps.coerceIn(5, 60)
@@ -537,14 +569,21 @@ class BoardAnalyzer {
         val nextNodes = Array(beam * 8) { SearchNode(maxSteps) }
         val currentNodes = Array(beam) { SearchNode(maxSteps) }
         // 有硬條件時的引導順序：形狀達成數 → （形狀未全達成時）形狀潛力 → 分數 − 全消剩餘成本
-        val selector = BeamSelector(beam, if (shapeEvaluator == null && !requireClear) null else { a, b ->
+        // 指定終點：手指離終點越遠扣分越多，且隨已用步數加重，讓後段路線自然收斂到終點
+        var stepIndex = 0
+        fun endPenalty(n: SearchNode): Long {
+            if (!constraint.hasEnd) return 0L
+            val d = kotlin.math.abs(n.r - constraint.endCell / 6) + kotlin.math.abs(n.c - constraint.endCell % 6)
+            return d.toLong() * END_PULL * (stepIndex + 1) / maxSteps
+        }
+        val selector = BeamSelector(beam, if (shapeEvaluator == null && !requireClear && !constraint.hasEnd) null else { a, b ->
             val left = nextNodes[a]
             val right = nextNodes[b]
             val satisfied = left.shapes.satisfied.compareTo(right.shapes.satisfied)
             val potential = left.shapes.potential.compareTo(right.shapes.potential)
-            // 全消剩餘以分數折抵（每顆約一個 Combo），讓搜尋在接近全消時仍能繼續堆 Combo
-            val blended = (left.score.toLong() - left.clearCost.toLong() * ClearGoal.guideWeight)
-                .compareTo(right.score.toLong() - right.clearCost.toLong() * ClearGoal.guideWeight)
+            // 全消剩餘以分數折抵（成本 1 點 ≈ 1 Combo），讓搜尋在接近全消時仍能繼續堆 Combo
+            val blended = (left.score.toLong() - left.clearCost.toLong() * ClearGoal.guideWeight - endPenalty(left))
+                .compareTo(right.score.toLong() - right.clearCost.toLong() * ClearGoal.guideWeight - endPenalty(right))
             when {
                 satisfied != 0 -> satisfied
                 potential != 0 && shapeEvaluator != null && left.shapes.satisfied < shapeGoals.size -> potential
@@ -573,7 +612,7 @@ class BoardAnalyzer {
         // 讓搜尋資源集中在有潛力的分支，而非每個起手點各跑一輪
         val initCombos = calculateCombosWithCascade(board)
         val initClearLeft = ClearGoal.remaining(board, matchBoard, clearTypes)
-        val initClearCost = ClearGoal.cost(board, matchBoard, clearTypes)
+        val initClearCost = ClearGoal.cost(board, matchBoard, clearTypes, anchorCell, anchorType)
         val initScore = when (strategyMode) {
             1 -> evaluateBottomUp(board, initCombos)
             2 -> evaluateAmelioration(board, initCombos)
@@ -591,6 +630,7 @@ class BoardAnalyzer {
         }
 
         for (s in 0 until maxSteps) {
+            stepIndex = s
             var nextNodesCount = 0
             for (i in 0 until currentNodesCount) {
                 val curr = currentNodes[i]
@@ -612,7 +652,7 @@ class BoardAnalyzer {
                         nextNode.combos = calculateCombosWithCascade(nextNode.board)
                         // 必須緊接在 resolve 之後讀取首批消除標記
                         nextNode.clearLeft = ClearGoal.remaining(nextNode.board, matchBoard, clearTypes)
-                        nextNode.clearCost = ClearGoal.cost(nextNode.board, matchBoard, clearTypes)
+                        nextNode.clearCost = ClearGoal.cost(nextNode.board, matchBoard, clearTypes, anchorCell, anchorType)
                         val baseScore = when(strategyMode) {
                             1 -> evaluateBottomUp(nextNode.board, nextNode.combos)
                             2 -> evaluateAmelioration(nextNode.board, nextNode.combos)
